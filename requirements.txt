@@ -1,0 +1,12 @@
+streamlit
+faiss-cpu
+sentence-transformers
+ollama
+pymupdf
+python-docx
+pytesseract
+beautifulsoup4
+requests
+numpy
+pandas
+faster-whisper
