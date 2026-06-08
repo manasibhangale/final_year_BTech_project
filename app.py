@@ -1,6 +1,8 @@
 import streamlit as st
 import os
 import time
+import json
+import streamlit.components.v1 as components
 
 from modules.document_loader import load_document, load_url
 from modules.text_splitter import split_text
@@ -8,6 +10,7 @@ from modules.vector_store import create_embeddings, save_index, load_index
 from modules.rag_pipeline import generate_answer
 from modules.question_generator import generate_questions
 from modules.research_analyzer import analyze_paper
+from modules.mindmap_generator import generate_mindmap
 from modules.quiz_generator import generate_quiz, analyze_quiz_results
 import warnings
 import logging
@@ -47,6 +50,11 @@ if "quiz_results" not in st.session_state:
     st.session_state.quiz_results = None
 if "quiz_live_answers" not in st.session_state:
     st.session_state.quiz_live_answers = {}
+if "mindmap_chat" not in st.session_state:
+    st.session_state.mindmap_chat = []
+
+if "mindmap_data" not in st.session_state:
+    st.session_state.mindmap_data = None
 
 # ─────────────────────────────────────────────
 # THEME
@@ -889,6 +897,7 @@ with st.sidebar:
         ("quiz",      "🧠", "Quiz"),
         ("questions", "❓", "Questions"),
         ("analyzer",  "🔬", "Analyzer"),
+        ("mindmap",   "🗺️", "Mind Map"),
     ]
     for key, icon, label in pages:
         active = "active" if st.session_state.active_tab == key else ""
@@ -1010,7 +1019,14 @@ if tab == "chat":
         <div class="info-tile-val">{total_q}</div>
         <div class="info-tile-label">Questions Asked</div>
       </div>
-      
+      <div class="info-tile">
+        <div class="info-tile-val">{doc_chunks}</div>
+        <div class="info-tile-label">Doc Chunks Indexed</div>
+      </div>
+      <div class="info-tile">
+        <div class="info-tile-val">{"On" if idx_chk else "Off"}</div>
+        <div class="info-tile-label">RAG Status</div>
+      </div>
     </div>
     """, unsafe_allow_html=True)
 
@@ -1249,7 +1265,401 @@ elif tab == "analyzer":
             mime="text/plain",
         )
 
+# ─────────────────────────────────────────────────────────────────────────────
+# D3.js Mind Map Renderer
+# ─────────────────────────────────────────────────────────────────────────────
 
+
+def render_mindmap_html(mindmap_json):
+
+    html_code = f"""
+    <!DOCTYPE html>
+    <html>
+
+    <head>
+
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+
+    <style>
+
+    body {{
+        margin: 0;
+        overflow: hidden;
+        background: #0f172a;
+        font-family: Inter, sans-serif;
+    }}
+
+    #mindmap {{
+        width: 100vw;
+        height: 700px;
+    }}
+
+    .node circle {{
+        stroke: white;
+        stroke-width: 2px;
+        transition: 0.3s;
+    }}
+
+    .node text {{
+        fill: white;
+        font-size: 13px;
+        font-weight: 600;
+    }}
+
+    .link {{
+        fill: none;
+        stroke: rgba(255,255,255,0.18);
+        stroke-width: 1.6px;
+    }}
+
+    </style>
+
+    </head>
+
+    <body>
+
+    <div id="mindmap"></div>
+
+    <script>
+
+    const data = {mindmap_json};
+
+    const width = 1200;
+    const height = 700;
+
+    const svg = d3.select("#mindmap")
+        .append("svg")
+        .attr("width", width)
+        .attr("height", height);
+
+    const g = svg.append("g")
+        .attr(
+            "transform",
+            `translate(${width / 2},${height / 2})`
+        );
+
+    const root = d3.hierarchy(data);
+
+    const tree = d3.tree()
+        .size([2 * Math.PI, 280]);
+
+    tree(root);
+
+    // Links
+    g.selectAll(".link")
+        .data(root.links())
+        .enter()
+        .append("path")
+        .attr("class", "link")
+        .attr(
+            "d",
+            d3.linkRadial()
+                .angle(d => d.x)
+                .radius(d => d.y)
+        );
+
+    // Nodes
+    const node = g.selectAll(".node")
+        .data(root.descendants())
+        .enter()
+        .append("g")
+        .attr("class", "node")
+        .attr(
+            "transform",
+            d => `
+                rotate(${d.x * 180 / Math.PI - 90})
+                translate(${d.y},0)
+            `
+        );
+
+    node.append("circle")
+        .attr("r", d => d.data.size || 10)
+        .attr("fill", d => d.data.color || "#6366f1");
+
+    node.append("text")
+        .attr("dy", "0.31em")
+        .attr(
+            "x",
+            d => d.x < Math.PI ? 14 : -14
+        )
+        .attr(
+            "text-anchor",
+            d => d.x < Math.PI ? "start" : "end"
+        )
+        .attr(
+            "transform",
+            d => d.x >= Math.PI ? "rotate(180)" : null
+        )
+        .text(d => `${{d.data.icon || "•"}} ${{d.data.name}}`);
+
+    // Zoom
+    svg.call(
+        d3.zoom().on("zoom", (event) => {{
+            g.attr("transform", event.transform);
+        }})
+    );
+
+    </script>
+
+    </body>
+    </html>
+    """
+
+    components.html(
+        html_code,
+        height=720,
+        scrolling=True
+    )
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 🗺️ MIND MAP GENERATOR
+# ─────────────────────────────────────────────────────────────────────────────
+
+elif tab == "mindmap":
+
+    st.markdown("""
+    <div class="hero">
+        <div class="hero-badge">
+            🗺️ AI Visual Knowledge Mapping
+        </div>
+
+        <h1 class="hero-title">
+            AI Mind Map Generator
+        </h1>
+
+        <p class="hero-subtitle">
+            Transform documents and ideas into interactive visual concept maps.
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ─────────────────────────────────────────────────────────────────────
+    # Top Toolbar
+    # ─────────────────────────────────────────────────────────────────────
+
+    st.markdown("""
+    <div class="mm-wrap">
+
+        <div class="mm-toolbar">
+            <button class="mm-toolbar-btn">🧠 Smart Mapping</button>
+            <button class="mm-toolbar-btn">⚡ AI Powered</button>
+            <button class="mm-toolbar-btn">🌐 Interactive</button>
+            <button class="mm-toolbar-btn">📘 Concept Visualizer</button>
+        </div>
+
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ─────────────────────────────────────────────────────────────────────
+    # Upload + Chat Layout
+    # ─────────────────────────────────────────────────────────────────────
+
+    col1, col2 = st.columns([1.2, 1])
+
+    # ─────────────────────────────────────────────────────────────────
+    # LEFT SIDE
+    # ─────────────────────────────────────────────────────────────────
+
+    with col1:
+
+        st.markdown("""
+        <div class="section-title">
+            📄 Document Based Mind Map
+        </div>
+        """, unsafe_allow_html=True)
+
+        uploaded_mm = st.file_uploader(
+            "Upload PDF / DOCX / TXT",
+            type=["pdf", "docx", "txt"],
+            key="mindmap_upload"
+        )
+
+        if uploaded_mm:
+
+            st.success(f"Uploaded: {uploaded_mm.name}")
+
+            mm_text = ""
+
+            try:
+
+                if uploaded_mm.name.endswith(".txt"):
+
+                    mm_text = str(
+                        uploaded_mm.read(),
+                        "utf-8"
+                    )
+
+                else:
+
+                    from modules.document_loader import load_document
+
+                    mm_text = load_document(uploaded_mm)
+
+            except Exception as e:
+
+                st.error(f"Document processing failed: {e}")
+
+            st.markdown("<br>", unsafe_allow_html=True)
+
+            if st.button(
+                "🧠 Generate Mind Map",
+                use_container_width=True
+            ):
+
+                with st.spinner(
+                    "Generating AI mind map..."
+                ):
+
+                    result = generate_mindmap(
+                        mm_text,
+                        mode="document"
+                    )
+
+                    if result:
+
+                        st.session_state.mindmap_data = result
+
+                        st.success(
+                            "Mind map generated successfully!"
+                        )
+
+                    else:
+
+                        st.error(
+                            "Failed to generate mind map."
+                        )
+
+    # ─────────────────────────────────────────────────────────────────
+    # RIGHT SIDE
+    # ─────────────────────────────────────────────────────────────────
+
+    with col2:
+
+        st.markdown("""
+        <div class="section-title">
+            💬 Chat-to-MindMap
+        </div>
+        """, unsafe_allow_html=True)
+
+        st.markdown("""
+        <div style="
+            padding:12px;
+            border-radius:12px;
+            background:var(--surface);
+            border:1px solid var(--border);
+            margin-bottom:12px;
+            font-size:13px;
+            color:var(--text2);
+        ">
+            Try prompts like:
+            <br><br>
+
+            • Generate a mind map for Machine Learning
+            <br>
+            • Create concept map for DBMS
+            <br>
+            • Visualize Operating System architecture
+            <br>
+            • Generate revision map for Python
+        </div>
+        """, unsafe_allow_html=True)
+
+        # Chat history
+        st.markdown(
+            '<div class="mm-chat-wrap">',
+            unsafe_allow_html=True
+        )
+
+        for msg in st.session_state.mindmap_chat:
+
+            role = msg["role"]
+
+            st.markdown(f"""
+            <div class="mm-msg {role}">
+                {msg["content"]}
+            </div>
+            """, unsafe_allow_html=True)
+
+        st.markdown(
+            '</div>',
+            unsafe_allow_html=True
+        )
+
+        # Chat Input
+        user_prompt = st.chat_input(
+            "Ask AI to generate a mind map..."
+        )
+
+        if user_prompt:
+
+            st.session_state.mindmap_chat.append({
+                "role": "user",
+                "content": user_prompt
+            })
+
+            with st.spinner(
+                "AI is generating visual knowledge map..."
+            ):
+
+                result = generate_mindmap(
+                    user_prompt,
+                    mode="chat"
+                )
+
+                if result:
+
+                    st.session_state.mindmap_data = result
+
+                    st.session_state.mindmap_chat.append({
+                        "role": "ai",
+                        "content": (
+                            "Mind map generated successfully."
+                        )
+                    })
+
+                else:
+
+                    st.session_state.mindmap_chat.append({
+                        "role": "ai",
+                        "content": (
+                            "Failed to generate mind map."
+                        )
+                    })
+
+            st.rerun()
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ─────────────────────────────────────────────────────────────────────
+    # VISUALIZATION
+    # ─────────────────────────────────────────────────────────────────────
+
+    if st.session_state.mindmap_data:
+
+        st.markdown("""
+        <div class="section-title">
+            🌐 Interactive Mind Map Visualization
+        </div>
+        """, unsafe_allow_html=True)
+
+        mindmap_json = json.dumps(
+            st.session_state.mindmap_data
+        )
+
+        render_mindmap_html(mindmap_json)
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        # Export
+        st.download_button(
+            label="⬇️ Download Map JSON",
+            data=mindmap_json,
+            file_name="mindmap.json",
+            mime="application/json",
+            use_container_width=True
+        )
 # ══════════════════════════════════════════════
 # 🧠  QUIZ
 # ══════════════════════════════════════════════
