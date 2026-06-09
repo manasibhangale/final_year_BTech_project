@@ -1597,11 +1597,10 @@ elif tab == "quiz":
 
             expl_html = ""
             if pq.get("explanation"):
-                expl_html = f"""
-                <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border);
-                             font-size:12.5px;color:var(--text3);">
-                  💡 {pq['explanation']}
-                </div>"""
+                expl_html = (
+                    f'<div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border);'
+                    f'font-size:12.5px;color:var(--text3);">💡 {pq["explanation"]}</div>'
+                )
 
             st.markdown(f"""
             <div class="q-card" style="border-left:3px solid {result_color};">
