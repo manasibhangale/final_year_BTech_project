@@ -14,9 +14,11 @@ from modules.mindmap_generator import generate_mindmap
 from modules.quiz_generator import generate_quiz, analyze_quiz_results
 import warnings
 import logging
-
 warnings.filterwarnings("ignore")
 logging.getLogger("transformers").setLevel(logging.ERROR)
+
+
+os.environ["TRANSFORMERS_NO_ADVISORY_WARNINGS"] = "1"
 
 # ─────────────────────────────────────────────
 # PAGE CONFIG
@@ -50,11 +52,10 @@ if "quiz_results" not in st.session_state:
     st.session_state.quiz_results = None
 if "quiz_live_answers" not in st.session_state:
     st.session_state.quiz_live_answers = {}
-if "mindmap_chat" not in st.session_state:
-    st.session_state.mindmap_chat = []
-
 if "mindmap_data" not in st.session_state:
     st.session_state.mindmap_data = None
+if "mindmap_chat" not in st.session_state:
+    st.session_state.mindmap_chat = []
 
 # ─────────────────────────────────────────────
 # THEME
@@ -894,10 +895,10 @@ with st.sidebar:
     pages = [
         ("chat",      "💬", "Chat"),
         ("upload",    "📄", "Documents"),
+        ("mindmap",    "📄", "Mindmap"),
         ("quiz",      "🧠", "Quiz"),
         ("questions", "❓", "Questions"),
         ("analyzer",  "🔬", "Analyzer"),
-        ("mindmap",   "🗺️", "Mind Map"),
     ]
     for key, icon, label in pages:
         active = "active" if st.session_state.active_tab == key else ""
@@ -1265,401 +1266,6 @@ elif tab == "analyzer":
             mime="text/plain",
         )
 
-# ─────────────────────────────────────────────────────────────────────────────
-# D3.js Mind Map Renderer
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-def render_mindmap_html(mindmap_json):
-
-    html_code = f"""
-    <!DOCTYPE html>
-    <html>
-
-    <head>
-
-    <script src="https://d3js.org/d3.v7.min.js"></script>
-
-    <style>
-
-    body {{
-        margin: 0;
-        overflow: hidden;
-        background: #0f172a;
-        font-family: Inter, sans-serif;
-    }}
-
-    #mindmap {{
-        width: 100vw;
-        height: 700px;
-    }}
-
-    .node circle {{
-        stroke: white;
-        stroke-width: 2px;
-        transition: 0.3s;
-    }}
-
-    .node text {{
-        fill: white;
-        font-size: 13px;
-        font-weight: 600;
-    }}
-
-    .link {{
-        fill: none;
-        stroke: rgba(255,255,255,0.18);
-        stroke-width: 1.6px;
-    }}
-
-    </style>
-
-    </head>
-
-    <body>
-
-    <div id="mindmap"></div>
-
-    <script>
-
-    const data = {mindmap_json};
-
-    const width = 1200;
-    const height = 700;
-
-    const svg = d3.select("#mindmap")
-        .append("svg")
-        .attr("width", width)
-        .attr("height", height);
-
-    const g = svg.append("g")
-        .attr(
-            "transform",
-            `translate(${width / 2},${height / 2})`
-        );
-
-    const root = d3.hierarchy(data);
-
-    const tree = d3.tree()
-        .size([2 * Math.PI, 280]);
-
-    tree(root);
-
-    // Links
-    g.selectAll(".link")
-        .data(root.links())
-        .enter()
-        .append("path")
-        .attr("class", "link")
-        .attr(
-            "d",
-            d3.linkRadial()
-                .angle(d => d.x)
-                .radius(d => d.y)
-        );
-
-    // Nodes
-    const node = g.selectAll(".node")
-        .data(root.descendants())
-        .enter()
-        .append("g")
-        .attr("class", "node")
-        .attr(
-            "transform",
-            d => `
-                rotate(${d.x * 180 / Math.PI - 90})
-                translate(${d.y},0)
-            `
-        );
-
-    node.append("circle")
-        .attr("r", d => d.data.size || 10)
-        .attr("fill", d => d.data.color || "#6366f1");
-
-    node.append("text")
-        .attr("dy", "0.31em")
-        .attr(
-            "x",
-            d => d.x < Math.PI ? 14 : -14
-        )
-        .attr(
-            "text-anchor",
-            d => d.x < Math.PI ? "start" : "end"
-        )
-        .attr(
-            "transform",
-            d => d.x >= Math.PI ? "rotate(180)" : null
-        )
-        .text(d => `${{d.data.icon || "•"}} ${{d.data.name}}`);
-
-    // Zoom
-    svg.call(
-        d3.zoom().on("zoom", (event) => {{
-            g.attr("transform", event.transform);
-        }})
-    );
-
-    </script>
-
-    </body>
-    </html>
-    """
-
-    components.html(
-        html_code,
-        height=720,
-        scrolling=True
-    )
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 🗺️ MIND MAP GENERATOR
-# ─────────────────────────────────────────────────────────────────────────────
-
-elif tab == "mindmap":
-
-    st.markdown("""
-    <div class="hero">
-        <div class="hero-badge">
-            🗺️ AI Visual Knowledge Mapping
-        </div>
-
-        <h1 class="hero-title">
-            AI Mind Map Generator
-        </h1>
-
-        <p class="hero-subtitle">
-            Transform documents and ideas into interactive visual concept maps.
-        </p>
-    </div>
-    """, unsafe_allow_html=True)
-
-    # ─────────────────────────────────────────────────────────────────────
-    # Top Toolbar
-    # ─────────────────────────────────────────────────────────────────────
-
-    st.markdown("""
-    <div class="mm-wrap">
-
-        <div class="mm-toolbar">
-            <button class="mm-toolbar-btn">🧠 Smart Mapping</button>
-            <button class="mm-toolbar-btn">⚡ AI Powered</button>
-            <button class="mm-toolbar-btn">🌐 Interactive</button>
-            <button class="mm-toolbar-btn">📘 Concept Visualizer</button>
-        </div>
-
-    </div>
-    """, unsafe_allow_html=True)
-
-    st.markdown("<br>", unsafe_allow_html=True)
-
-    # ─────────────────────────────────────────────────────────────────────
-    # Upload + Chat Layout
-    # ─────────────────────────────────────────────────────────────────────
-
-    col1, col2 = st.columns([1.2, 1])
-
-    # ─────────────────────────────────────────────────────────────────
-    # LEFT SIDE
-    # ─────────────────────────────────────────────────────────────────
-
-    with col1:
-
-        st.markdown("""
-        <div class="section-title">
-            📄 Document Based Mind Map
-        </div>
-        """, unsafe_allow_html=True)
-
-        uploaded_mm = st.file_uploader(
-            "Upload PDF / DOCX / TXT",
-            type=["pdf", "docx", "txt"],
-            key="mindmap_upload"
-        )
-
-        if uploaded_mm:
-
-            st.success(f"Uploaded: {uploaded_mm.name}")
-
-            mm_text = ""
-
-            try:
-
-                if uploaded_mm.name.endswith(".txt"):
-
-                    mm_text = str(
-                        uploaded_mm.read(),
-                        "utf-8"
-                    )
-
-                else:
-
-                    from modules.document_loader import load_document
-
-                    mm_text = load_document(uploaded_mm)
-
-            except Exception as e:
-
-                st.error(f"Document processing failed: {e}")
-
-            st.markdown("<br>", unsafe_allow_html=True)
-
-            if st.button(
-                "🧠 Generate Mind Map",
-                use_container_width=True
-            ):
-
-                with st.spinner(
-                    "Generating AI mind map..."
-                ):
-
-                    result = generate_mindmap(
-                        mm_text,
-                        mode="document"
-                    )
-
-                    if result:
-
-                        st.session_state.mindmap_data = result
-
-                        st.success(
-                            "Mind map generated successfully!"
-                        )
-
-                    else:
-
-                        st.error(
-                            "Failed to generate mind map."
-                        )
-
-    # ─────────────────────────────────────────────────────────────────
-    # RIGHT SIDE
-    # ─────────────────────────────────────────────────────────────────
-
-    with col2:
-
-        st.markdown("""
-        <div class="section-title">
-            💬 Chat-to-MindMap
-        </div>
-        """, unsafe_allow_html=True)
-
-        st.markdown("""
-        <div style="
-            padding:12px;
-            border-radius:12px;
-            background:var(--surface);
-            border:1px solid var(--border);
-            margin-bottom:12px;
-            font-size:13px;
-            color:var(--text2);
-        ">
-            Try prompts like:
-            <br><br>
-
-            • Generate a mind map for Machine Learning
-            <br>
-            • Create concept map for DBMS
-            <br>
-            • Visualize Operating System architecture
-            <br>
-            • Generate revision map for Python
-        </div>
-        """, unsafe_allow_html=True)
-
-        # Chat history
-        st.markdown(
-            '<div class="mm-chat-wrap">',
-            unsafe_allow_html=True
-        )
-
-        for msg in st.session_state.mindmap_chat:
-
-            role = msg["role"]
-
-            st.markdown(f"""
-            <div class="mm-msg {role}">
-                {msg["content"]}
-            </div>
-            """, unsafe_allow_html=True)
-
-        st.markdown(
-            '</div>',
-            unsafe_allow_html=True
-        )
-
-        # Chat Input
-        user_prompt = st.chat_input(
-            "Ask AI to generate a mind map..."
-        )
-
-        if user_prompt:
-
-            st.session_state.mindmap_chat.append({
-                "role": "user",
-                "content": user_prompt
-            })
-
-            with st.spinner(
-                "AI is generating visual knowledge map..."
-            ):
-
-                result = generate_mindmap(
-                    user_prompt,
-                    mode="chat"
-                )
-
-                if result:
-
-                    st.session_state.mindmap_data = result
-
-                    st.session_state.mindmap_chat.append({
-                        "role": "ai",
-                        "content": (
-                            "Mind map generated successfully."
-                        )
-                    })
-
-                else:
-
-                    st.session_state.mindmap_chat.append({
-                        "role": "ai",
-                        "content": (
-                            "Failed to generate mind map."
-                        )
-                    })
-
-            st.rerun()
-
-    st.markdown("<br>", unsafe_allow_html=True)
-
-    # ─────────────────────────────────────────────────────────────────────
-    # VISUALIZATION
-    # ─────────────────────────────────────────────────────────────────────
-
-    if st.session_state.mindmap_data:
-
-        st.markdown("""
-        <div class="section-title">
-            🌐 Interactive Mind Map Visualization
-        </div>
-        """, unsafe_allow_html=True)
-
-        mindmap_json = json.dumps(
-            st.session_state.mindmap_data
-        )
-
-        render_mindmap_html(mindmap_json)
-
-        st.markdown("<br>", unsafe_allow_html=True)
-
-        # Export
-        st.download_button(
-            label="⬇️ Download Map JSON",
-            data=mindmap_json,
-            file_name="mindmap.json",
-            mime="application/json",
-            use_container_width=True
-        )
 # ══════════════════════════════════════════════
 # 🧠  QUIZ
 # ══════════════════════════════════════════════
@@ -2034,3 +1640,582 @@ elif tab == "quiz":
                 st.session_state.quiz_results      = None
                 st.session_state.quiz_live_answers = {}
                 st.rerun()
+
+
+# ══════════════════════════════════════════════
+#  🗺️  MIND MAP
+# ══════════════════════════════════════════════
+elif tab == "mindmap":
+
+    # ── Extra CSS for the Mind Map page ──────────────────────────────────────
+    st.markdown("""
+    <style>
+    /* Hero */
+    .mm-hero {
+        text-align: center;
+        padding: 48px 24px 36px;
+        background: linear-gradient(135deg,
+            rgba(99,102,241,0.08) 0%,
+            rgba(139,92,246,0.05) 50%,
+            rgba(6,182,212,0.06) 100%);
+        border: 1px solid rgba(99,102,241,0.18);
+        border-radius: 20px;
+        margin-bottom: 32px;
+        position: relative;
+        overflow: hidden;
+        animation: fadeUp 0.6s ease;
+    }
+    .mm-hero::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background: radial-gradient(ellipse at 50% 0%,
+            rgba(99,102,241,0.18) 0%, transparent 70%);
+        pointer-events: none;
+    }
+    .mm-ai-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        background: linear-gradient(135deg,
+            rgba(99,102,241,0.2), rgba(139,92,246,0.15));
+        border: 1px solid rgba(99,102,241,0.3);
+        border-radius: 99px;
+        padding: 5px 14px;
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 1px;
+        text-transform: uppercase;
+        color: #a78bfa;
+        margin-bottom: 18px;
+    }
+    .mm-hero-title {
+        font-family: var(--font-head);
+        font-size: 38px;
+        font-weight: 800;
+        letter-spacing: -1px;
+        line-height: 1.15;
+        margin-bottom: 12px;
+        background: linear-gradient(135deg, #e8edf5, #a78bfa, #67e8f9);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
+    }
+    .mm-hero-sub {
+        font-size: 15px;
+        color: var(--text2);
+        max-width: 520px;
+        margin: 0 auto 24px;
+        line-height: 1.65;
+    }
+    .mm-chips {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: center;
+        gap: 10px;
+    }
+    .mm-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 8px 16px;
+        border-radius: 99px;
+        font-size: 13px;
+        font-weight: 600;
+        cursor: default;
+        transition: all 0.25s ease;
+        border: 1px solid;
+    }
+    .mm-chip:nth-child(1) { background: rgba(99,102,241,0.12); border-color: rgba(99,102,241,0.3); color:#a78bfa; }
+    .mm-chip:nth-child(2) { background: rgba(245,158,11,0.12); border-color: rgba(245,158,11,0.3); color:#fbbf24; }
+    .mm-chip:nth-child(3) { background: rgba(6,182,212,0.12);  border-color: rgba(6,182,212,0.3);  color:#67e8f9; }
+    .mm-chip:nth-child(4) { background: rgba(16,185,129,0.12); border-color: rgba(16,185,129,0.3); color:#6ee7b7; }
+    .mm-chip:hover { transform: translateY(-2px); box-shadow: 0 6px 18px rgba(0,0,0,0.25); }
+
+    /* Panels */
+    .mm-panel {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 24px;
+        margin-bottom: 20px;
+        animation: fadeUp 0.4s ease;
+        transition: border-color 0.25s;
+    }
+    .mm-panel:hover { border-color: rgba(99,102,241,0.25); }
+    .mm-panel-title {
+        font-family: var(--font-head);
+        font-size: 16px;
+        font-weight: 700;
+        color: var(--text);
+        margin-bottom: 4px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+    }
+    .mm-panel-sub { font-size: 13px; color: var(--text2); margin-bottom: 16px; }
+
+    /* Chat bubbles */
+    .mm-chat-wrap { display:flex; flex-direction:column; gap:14px; padding: 4px 0 16px; }
+    .mm-msg-row   { display:flex; gap:10px; animation: fadeUp 0.3s ease; }
+    .mm-msg-row.user { flex-direction:row-reverse; }
+    .mm-bubble { max-width:76%; padding:12px 16px; border-radius:14px; font-size:14px; line-height:1.65; }
+    .mm-bubble.user { background:var(--user-bubble); color:#fff; border-radius:14px 4px 14px 14px; }
+    .mm-bubble.ai   { background:var(--bot-bubble); border:1px solid var(--border); color:var(--text); border-radius:4px 14px 14px 14px; }
+
+    /* Viz container */
+    .mm-viz-wrap {
+        width: 100%;
+        background: radial-gradient(ellipse at center,
+            rgba(99,102,241,0.06) 0%, rgba(8,12,20,0.0) 70%),
+            var(--bg2);
+        border: 1px solid var(--border);
+        border-radius: 20px;
+        overflow: hidden;
+        position: relative;
+        animation: fadeIn 0.5s ease;
+    }
+    .mm-viz-toolbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 12px 18px;
+        border-bottom: 1px solid var(--border);
+        background: var(--surface);
+    }
+    .mm-viz-title { font-family:var(--font-head); font-size:14px; font-weight:700; color:var(--text); }
+    .mm-viz-hint  { font-size:12px; color:var(--text3); }
+
+    /* Error card */
+    .mm-error {
+        background: rgba(239,68,68,0.08);
+        border: 1px solid rgba(239,68,68,0.25);
+        border-radius: var(--radius);
+        padding: 18px 20px;
+        color: #fca5a5;
+        font-size: 14px;
+        line-height: 1.65;
+        animation: fadeUp 0.4s ease;
+    }
+    .mm-error strong { color: #f87171; }
+
+    /* Export row */
+    .mm-export-row { display:flex; gap:10px; flex-wrap:wrap; margin-top:14px; }
+    </style>
+    """, unsafe_allow_html=True)
+
+    # ── Hero ────────────────────────────────────────────────────────────────
+    st.markdown("""
+    <div class="mm-hero">
+        <div class="mm-ai-badge">✦ AI Powered</div>
+        <div class="mm-hero-title">AI Mind Map Generator</div>
+        <div class="mm-hero-sub">
+            Transform documents and ideas into interactive visual concept maps.
+            Upload a file or type a prompt to generate your map instantly.
+        </div>
+        <div class="mm-chips">
+            <div class="mm-chip">🧠 Smart Mapping</div>
+            <div class="mm-chip">⚡ AI Powered</div>
+            <div class="mm-chip">🌐 Interactive</div>
+            <div class="mm-chip">📘 Concept Visualiser</div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ── Two-column layout ────────────────────────────────────────────────────
+    left_col, right_col = st.columns([1, 1.6], gap="large")
+
+    # ── LEFT: inputs ─────────────────────────────────────────────────────────
+    with left_col:
+
+        # ── Map type selector ────────────────────────────────────────────────
+        map_type = st.selectbox(
+            "Map Type",
+            ["🗺️  Mind Map", "🔗  Concept Map", "🌳  Topic Tree", "🕸️  Knowledge Graph"],
+            label_visibility="collapsed",
+        )
+
+        # ════════════════════════════════════════
+        # PANEL 1 — Document → Mind Map
+        # ════════════════════════════════════════
+        st.markdown("""
+        <div class="mm-panel">
+            <div class="mm-panel-title">📄 Document → Mind Map</div>
+            <div class="mm-panel-sub">Upload a PDF, DOCX, or TXT and generate a map from its content.</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        doc_file = st.file_uploader(
+            "Upload document",
+            type=["pdf", "docx", "txt"],
+            label_visibility="collapsed",
+            key="mm_doc_upload",
+        )
+
+        if doc_file:
+            # Extract text (reuse existing loaders)
+            from modules.document_loader import load_document
+            doc_text = load_document(doc_file)
+            st.caption(f"✅ {doc_file.name} loaded — {len(doc_text):,} characters")
+
+            if st.button("🗺️ Generate Map from Document", type="primary",
+                         use_container_width=True, key="mm_gen_doc"):
+                with st.spinner("Analysing document with AI…"):
+                    result = generate_mindmap(text=doc_text, source="document")
+                if result["success"]:
+                    st.session_state.mindmap_data = result["data"]
+                    st.success("✅ Mind map generated!")
+                else:
+                    st.markdown(f"""
+                    <div class="mm-error">
+                        <strong>⚠️ Generation failed</strong><br>{result["error"]}
+                    </div>
+                    """, unsafe_allow_html=True)
+                    st.session_state.mindmap_data = result["data"]  # show fallback
+
+        st.markdown("---")
+
+        # ════════════════════════════════════════
+        # PANEL 2 — Chat → Mind Map
+        # ════════════════════════════════════════
+        st.markdown("""
+        <div class="mm-panel">
+            <div class="mm-panel-title">💬 Chat → Mind Map</div>
+            <div class="mm-panel-sub">Type a topic or concept to visualise it instantly.</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        # Chat history display
+        if st.session_state.mindmap_chat:
+            st.markdown('<div class="mm-chat-wrap">', unsafe_allow_html=True)
+            for msg in st.session_state.mindmap_chat[-6:]:   # last 6 messages
+                role_cls = "user" if msg["role"] == "user" else "ai"
+                st.markdown(f"""
+                <div class="mm-msg-row {role_cls}">
+                    <div class="mm-bubble {role_cls}">{msg["content"]}</div>
+                </div>
+                """, unsafe_allow_html=True)
+            st.markdown('</div>', unsafe_allow_html=True)
+
+        # Input
+        with st.form("mm_chat_form", clear_on_submit=True):
+            chat_cols = st.columns([4, 1])
+            with chat_cols[0]:
+                chat_input = st.text_input(
+                    "Prompt",
+                    placeholder="e.g. Generate a mind map for Machine Learning",
+                    label_visibility="collapsed",
+                )
+            with chat_cols[1]:
+                send_btn = st.form_submit_button("→", use_container_width=True)
+
+        # Quick prompts
+        quick_prompts = [
+            "Machine Learning", "DBMS Concepts",
+            "Python Basics", "Operating Systems",
+        ]
+        qp_cols = st.columns(2)
+        for i, qp in enumerate(quick_prompts):
+            if qp_cols[i % 2].button(f"💡 {qp}", use_container_width=True,
+                                     key=f"qp_{i}"):
+                chat_input = f"Generate a mind map for {qp}"
+                send_btn = True
+
+        if send_btn and chat_input.strip():
+            st.session_state.mindmap_chat.append(
+                {"role": "user", "content": chat_input}
+            )
+            with st.spinner("Generating mind map…"):
+                result = generate_mindmap(prompt=chat_input, source="chat")
+
+            if result["success"]:
+                st.session_state.mindmap_data = result["data"]
+                reply = f"✅ Mind map generated for **{result['data']['name']}** — see the visualisation →"
+            else:
+                reply = f"⚠️ {result['error']}"
+                st.session_state.mindmap_data = result["data"]
+
+            st.session_state.mindmap_chat.append(
+                {"role": "ai", "content": reply}
+            )
+            st.rerun()
+
+        # Clear chat
+        if st.session_state.mindmap_chat:
+            if st.button("🗑️ Clear Chat", use_container_width=True, key="mm_clear_chat"):
+                st.session_state.mindmap_chat = []
+                st.rerun()
+
+    # ── RIGHT: visualisation ─────────────────────────────────────────────────
+    with right_col:
+
+        if st.session_state.mindmap_data:
+            tree_json = json.dumps(st.session_state.mindmap_data, ensure_ascii=False)
+            root_name = st.session_state.mindmap_data.get("name", "Mind Map")
+
+            st.markdown(f"""
+            <div class="mm-viz-wrap">
+                <div class="mm-viz-toolbar">
+                    <span class="mm-viz-title">🗺️ {root_name}</span>
+                    <span class="mm-viz-hint">Scroll to zoom · Drag to pan · Hover nodes</span>
+                </div>
+            """, unsafe_allow_html=True)
+
+            # ── D3.js radial tree ────────────────────────────────────────────
+            d3_html = f"""
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  * {{ margin:0; padding:0; box-sizing:border-box; }}
+  body {{
+    background: transparent;
+    font-family: 'DM Sans', 'Segoe UI', sans-serif;
+    overflow: hidden;
+  }}
+  #mm-svg {{
+    width: 100%;
+    height: 560px;
+    display: block;
+  }}
+  .link {{
+    fill: none;
+    stroke-width: 1.8;
+    stroke-opacity: 0.55;
+    transition: stroke-opacity 0.25s;
+  }}
+  .link:hover {{ stroke-opacity: 1; }}
+  .node circle {{
+    cursor: pointer;
+    transition: r 0.2s ease, filter 0.2s ease;
+  }}
+  .node circle:hover {{
+    filter: drop-shadow(0 0 10px currentColor);
+  }}
+  .node text {{
+    font-size: 11px;
+    fill: #e8edf5;
+    pointer-events: none;
+    font-weight: 500;
+  }}
+  .node.root circle {{
+    filter: drop-shadow(0 0 14px #a78bfa);
+  }}
+  .node.root text {{
+    font-size: 13px;
+    font-weight: 700;
+    fill: #e8edf5;
+  }}
+  .tooltip {{
+    position: absolute;
+    background: rgba(13,20,33,0.96);
+    border: 1px solid rgba(99,102,241,0.35);
+    border-radius: 10px;
+    padding: 8px 13px;
+    font-size: 12px;
+    color: #e8edf5;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.2s;
+    max-width: 200px;
+    word-break: break-word;
+    z-index: 99;
+    backdrop-filter: blur(8px);
+  }}
+</style>
+</head>
+<body>
+<svg id="mm-svg"></svg>
+<div class="tooltip" id="tip"></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
+<script>
+(function() {{
+  const DATA = {tree_json};
+
+  const W = document.getElementById('mm-svg').clientWidth || 700;
+  const H = 560;
+  const R = Math.min(W, H) / 2 - 80;
+
+  const svg = d3.select('#mm-svg')
+    .attr('viewBox', [-W/2, -H/2, W, H])
+    .call(d3.zoom()
+      .scaleExtent([0.3, 3.5])
+      .on('zoom', (e) => g.attr('transform', e.transform))
+    );
+
+  const g = svg.append('g');
+
+  const tree = d3.tree()
+    .size([2 * Math.PI, R])
+    .separation((a, b) => (a.parent == b.parent ? 1 : 2) / a.depth);
+
+  const root = d3.hierarchy(DATA);
+  tree(root);
+
+  /* ── Links ── */
+  const linkGen = d3.linkRadial()
+    .angle(d => d.x)
+    .radius(d => d.y);
+
+  function getColour(d) {{
+    return d.data.color || '#6366f1';
+  }}
+
+  g.selectAll('.link')
+    .data(root.links())
+    .join('path')
+      .attr('class', 'link')
+      .attr('d', linkGen)
+      .attr('stroke', d => getColour(d.target))
+      .style('opacity', 0)
+      .transition().duration(800).delay((d, i) => i * 18)
+      .style('opacity', 1);
+
+  /* ── Nodes ── */
+  const node = g.selectAll('.node')
+    .data(root.descendants())
+    .join('g')
+      .attr('class', d => 'node' + (d.depth === 0 ? ' root' : ''))
+      .attr('transform', d =>
+        `rotate(${{d.x * 180 / Math.PI - 90}}) translate(${{d.y}},0)`
+      )
+      .style('opacity', 0)
+      .call(sel => sel.transition().duration(600)
+        .delay((d, i) => i * 20)
+        .style('opacity', 1)
+      );
+
+  node.append('circle')
+    .attr('r', d => d.depth === 0 ? 14 : d.depth === 1 ? 9 : 6)
+    .attr('fill', d => getColour(d))
+    .attr('stroke', 'rgba(255,255,255,0.15)')
+    .attr('stroke-width', 1.5)
+    .on('mouseover', function(event, d) {{
+      d3.select(this)
+        .transition().duration(150)
+        .attr('r', d.depth === 0 ? 18 : d.depth === 1 ? 12 : 8)
+        .attr('filter', `drop-shadow(0 0 12px ${{getColour(d)}})`);
+      const tip = document.getElementById('tip');
+      tip.textContent = d.data.name;
+      tip.style.opacity = 1;
+      tip.style.left = (event.offsetX + 14) + 'px';
+      tip.style.top  = (event.offsetY - 10) + 'px';
+    }})
+    .on('mousemove', function(event) {{
+      const tip = document.getElementById('tip');
+      tip.style.left = (event.offsetX + 14) + 'px';
+      tip.style.top  = (event.offsetY - 10) + 'px';
+    }})
+    .on('mouseout', function(event, d) {{
+      d3.select(this)
+        .transition().duration(150)
+        .attr('r', d.depth === 0 ? 14 : d.depth === 1 ? 9 : 6)
+        .attr('filter', null);
+      document.getElementById('tip').style.opacity = 0;
+    }});
+
+  node.append('text')
+    .attr('dy', '0.31em')
+    .attr('x', d => {{
+      if (d.depth === 0) return 0;
+      return (d.x < Math.PI) === !d.children ? 14 : -14;
+    }})
+    .attr('text-anchor', d => {{
+      if (d.depth === 0) return 'middle';
+      return (d.x < Math.PI) === !d.children ? 'start' : 'end';
+    }})
+    .attr('transform', d => {{
+      if (d.depth === 0) return null;
+      const angle = d.x * 180 / Math.PI - 90;
+      return (d.x >= Math.PI) ? 'rotate(180)' : null;
+    }})
+    .text(d => {{
+      const name = d.data.name;
+      return name.length > 28 ? name.slice(0, 26) + '…' : name;
+    }});
+
+}})();
+</script>
+</body>
+</html>
+"""
+
+            components.html(d3_html, height=562, scrolling=False)
+            st.markdown("</div>", unsafe_allow_html=True)
+
+            # ── Export controls ───────────────────────────────────────────────
+            st.markdown('<div class="mm-export-row">', unsafe_allow_html=True)
+            exp_c1, exp_c2, exp_c3 = st.columns(3)
+
+            with exp_c1:
+                json_bytes = json.dumps(
+                    st.session_state.mindmap_data, indent=2, ensure_ascii=False
+                ).encode()
+                st.download_button(
+                    "⬇️ Download JSON",
+                    data=json_bytes,
+                    file_name="mindmap.json",
+                    mime="application/json",
+                    use_container_width=True,
+                )
+
+            with exp_c2:
+                if st.button("🔄 Regenerate", use_container_width=True, key="mm_regen"):
+                    st.session_state.mindmap_data = None
+                    st.rerun()
+
+            with exp_c3:
+                if st.button("🗑️ Clear Map", use_container_width=True, key="mm_clear"):
+                    st.session_state.mindmap_data = None
+                    st.session_state.mindmap_chat = []
+                    st.rerun()
+
+            st.markdown('</div>', unsafe_allow_html=True)
+
+        else:
+            # ── Empty state ───────────────────────────────────────────────────
+            st.markdown("""
+            <div style="
+                display:flex; flex-direction:column; align-items:center;
+                justify-content:center; height:480px;
+                background: var(--surface);
+                border: 2px dashed var(--border);
+                border-radius: 20px;
+                text-align:center;
+                animation: fadeIn 0.5s ease;
+            ">
+                <div style="font-size:64px;margin-bottom:18px;
+                    filter:drop-shadow(0 0 24px rgba(99,102,241,0.5));">🗺️</div>
+                <div style="font-family:var(--font-head);font-size:20px;
+                    font-weight:700;color:var(--text);margin-bottom:8px;">
+                    Your Mind Map Appears Here
+                </div>
+                <div style="font-size:14px;color:var(--text2);max-width:320px;line-height:1.65;">
+                    Upload a document or type a topic in the chat panel
+                    to generate an interactive mind map.
+                </div>
+                <div style="display:flex;gap:12px;margin-top:24px;flex-wrap:wrap;
+                    justify-content:center;">
+                    <span style="padding:6px 14px;border-radius:99px;font-size:12px;
+                        background:rgba(99,102,241,0.1);
+                        border:1px solid rgba(99,102,241,0.25);color:#a78bfa;">
+                        Zoom & Pan
+                    </span>
+                    <span style="padding:6px 14px;border-radius:99px;font-size:12px;
+                        background:rgba(6,182,212,0.1);
+                        border:1px solid rgba(6,182,212,0.25);color:#67e8f9;">
+                        Hover Glow
+                    </span>
+                    <span style="padding:6px 14px;border-radius:99px;font-size:12px;
+                        background:rgba(16,185,129,0.1);
+                        border:1px solid rgba(16,185,129,0.25);color:#6ee7b7;">
+                        Export JSON
+                    </span>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+
+# When you paste into app.py, remove the outer triple-quotes and the
+# MINDMAP_PAGE_CODE = ... wrapper — just paste the raw code block.
