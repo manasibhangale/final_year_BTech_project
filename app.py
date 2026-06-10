@@ -4,6 +4,7 @@ import time
 import json
 import streamlit.components.v1 as components
 
+from modules.flashcard_generator import generate_flashcards, update_memory, get_analytics, MEMORY_COLOURS
 from modules.document_loader import load_document, load_url
 from modules.text_splitter import split_text
 from modules.vector_store import create_embeddings, save_index, load_index
@@ -56,7 +57,10 @@ if "mindmap_data" not in st.session_state:
     st.session_state.mindmap_data = None
 if "mindmap_chat" not in st.session_state:
     st.session_state.mindmap_chat = []
-
+if "fc_cards"        not in st.session_state: st.session_state.fc_cards = []
+if "fc_idx"          not in st.session_state: st.session_state.fc_idx = 0
+if "fc_flipped"      not in st.session_state: st.session_state.fc_flipped = False
+if "fc_mode"         not in st.session_state: st.session_state.fc_mode = "study"
 # ─────────────────────────────────────────────
 # THEME
 # ─────────────────────────────────────────────
@@ -899,6 +903,7 @@ with st.sidebar:
         ("quiz",      "🧠", "Quiz"),
         ("questions", "❓", "Questions"),
         ("analyzer",  "🔬", "Analyzer"),
+        ("flashcards", "🃏", "Flashcards"),
     ]
     for key, icon, label in pages:
         active = "active" if st.session_state.active_tab == key else ""
@@ -2216,5 +2221,668 @@ elif tab == "mindmap":
             """, unsafe_allow_html=True)
 
 
-# When you paste into app.py, remove the outer triple-quotes and the
-# MINDMAP_PAGE_CODE = ... wrapper — just paste the raw code block.
+
+# ══════════════════════════════════════════════
+#  🃏  FLASHCARDS
+# ══════════════════════════════════════════════
+elif tab == "flashcards":
+
+    # ── Extra CSS ────────────────────────────────────────────────────────────
+    st.markdown("""
+    <style>
+    /* ── Flashcard Hero ── */
+    .fc-hero {
+        text-align:center; padding:44px 24px 32px;
+        background:linear-gradient(135deg,
+            rgba(99,102,241,0.09) 0%,rgba(139,92,246,0.06) 50%,rgba(6,182,212,0.07) 100%);
+        border:1px solid rgba(99,102,241,0.2); border-radius:20px;
+        margin-bottom:28px; position:relative; overflow:hidden;
+        animation:fadeUp 0.6s ease;
+    }
+    .fc-hero::before {
+        content:""; position:absolute; inset:0;
+        background:radial-gradient(ellipse at 50% 0%,rgba(99,102,241,0.2) 0%,transparent 70%);
+        pointer-events:none;
+    }
+    .fc-hero-title {
+        font-family:var(--font-head); font-size:36px; font-weight:800;
+        letter-spacing:-1px; line-height:1.15; margin-bottom:10px;
+        background:linear-gradient(135deg,#e8edf5,#a78bfa,#67e8f9);
+        -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text;
+    }
+    .fc-hero-sub { font-size:14px; color:var(--text2); max-width:480px; margin:0 auto 20px; line-height:1.65; }
+    .fc-chips { display:flex; flex-wrap:wrap; justify-content:center; gap:9px; }
+    .fc-chip {
+        display:inline-flex; align-items:center; gap:5px;
+        padding:7px 15px; border-radius:99px; font-size:12.5px; font-weight:600;
+        border:1px solid; transition:all 0.25s ease; cursor:default;
+    }
+    .fc-chip:nth-child(1){background:rgba(99,102,241,0.12);border-color:rgba(99,102,241,0.3);color:#a78bfa;}
+    .fc-chip:nth-child(2){background:rgba(245,158,11,0.12);border-color:rgba(245,158,11,0.3);color:#fbbf24;}
+    .fc-chip:nth-child(3){background:rgba(6,182,212,0.12);border-color:rgba(6,182,212,0.3);color:#67e8f9;}
+    .fc-chip:nth-child(4){background:rgba(16,185,129,0.12);border-color:rgba(16,185,129,0.3);color:#6ee7b7;}
+    .fc-chip:hover{transform:translateY(-2px);box-shadow:0 6px 18px rgba(0,0,0,0.25);}
+
+    /* ── Mode tabs ── */
+    .fc-mode-bar {
+        display:flex; gap:8px; margin-bottom:24px;
+        background:var(--surface); border:1px solid var(--border);
+        border-radius:12px; padding:5px;
+    }
+    .fc-mode-btn {
+        flex:1; padding:9px 0; border-radius:9px; font-size:13px; font-weight:600;
+        cursor:pointer; text-align:center; transition:all 0.2s ease; color:var(--text2);
+        border:none; background:transparent;
+    }
+    .fc-mode-btn.active {
+        background:linear-gradient(135deg,rgba(99,102,241,0.25),rgba(139,92,246,0.18));
+        color:#a78bfa; border:1px solid rgba(99,102,241,0.25);
+    }
+
+    /* ── 3-D flip card ── */
+    .fc-scene {
+        perspective:1200px; width:100%; max-width:620px;
+        margin:0 auto 28px; cursor:pointer;
+    }
+    .fc-card-wrap {
+        position:relative; width:100%; padding-bottom:56%;
+        transform-style:preserve-3d;
+        transition:transform 0.55s cubic-bezier(0.4,0.2,0.2,1);
+    }
+    .fc-card-wrap.flipped { transform:rotateY(180deg); }
+    .fc-face {
+        position:absolute; inset:0; border-radius:20px;
+        backface-visibility:hidden; -webkit-backface-visibility:hidden;
+        display:flex; flex-direction:column; justify-content:center;
+        align-items:center; padding:32px 36px; text-align:center;
+        overflow:hidden;
+    }
+    .fc-front {
+        background:linear-gradient(135deg,
+            rgba(99,102,241,0.12) 0%,rgba(139,92,246,0.08) 100%);
+        border:1px solid rgba(99,102,241,0.3);
+        box-shadow:0 8px 40px rgba(99,102,241,0.2),inset 0 1px 0 rgba(255,255,255,0.07);
+    }
+    .fc-back {
+        background:linear-gradient(135deg,
+            rgba(6,182,212,0.1) 0%,rgba(16,185,129,0.07) 100%);
+        border:1px solid rgba(6,182,212,0.3);
+        box-shadow:0 8px 40px rgba(6,182,212,0.15),inset 0 1px 0 rgba(255,255,255,0.06);
+        transform:rotateY(180deg);
+    }
+    .fc-card-number {
+        position:absolute; top:14px; left:18px;
+        font-size:11px; color:var(--text3); font-weight:600; letter-spacing:0.5px;
+    }
+    .fc-star-btn {
+        position:absolute; top:12px; right:16px;
+        font-size:18px; cursor:pointer; opacity:0.6; transition:opacity 0.2s;
+    }
+    .fc-star-btn:hover { opacity:1; }
+    .fc-badges { display:flex; gap:7px; margin-bottom:18px; flex-wrap:wrap; justify-content:center; }
+    .fc-badge {
+        padding:3px 11px; border-radius:99px; font-size:10.5px;
+        font-weight:700; letter-spacing:0.5px; border:1px solid;
+    }
+    .fc-question {
+        font-family:var(--font-head); font-size:20px; font-weight:700;
+        color:var(--text); line-height:1.45; margin-bottom:14px;
+    }
+    .fc-hint {
+        font-size:12px; color:var(--text3); font-style:italic;
+        margin-top:12px; padding:6px 14px;
+        background:rgba(255,255,255,0.04); border-radius:8px;
+    }
+    .fc-flip-label {
+        position:absolute; bottom:14px;
+        font-size:11px; color:var(--text3); letter-spacing:0.5px;
+    }
+    .fc-answer {
+        font-family:var(--font-head); font-size:22px; font-weight:800;
+        color:#67e8f9; line-height:1.35; margin-bottom:12px;
+    }
+    .fc-explanation {
+        font-size:13px; color:var(--text2); line-height:1.6;
+        max-width:420px; margin:0 auto;
+    }
+
+    /* ── Controls row ── */
+    .fc-controls {
+        display:flex; align-items:center; justify-content:center;
+        gap:12px; margin-bottom:22px; flex-wrap:wrap;
+    }
+    .fc-nav-btn {
+        width:44px; height:44px; border-radius:12px;
+        background:var(--surface); border:1px solid var(--border);
+        font-size:18px; cursor:pointer; display:flex;
+        align-items:center; justify-content:center;
+        transition:all 0.2s ease; color:var(--text2);
+    }
+    .fc-nav-btn:hover { border-color:rgba(99,102,241,0.4); color:var(--text); }
+    .fc-counter {
+        font-family:var(--font-head); font-size:14px; font-weight:700;
+        color:var(--text); padding:0 8px;
+    }
+
+    /* ── Knew-it row ── */
+    .fc-knew-row {
+        display:flex; gap:12px; max-width:360px; margin:0 auto 28px;
+    }
+    .fc-knew-btn {
+        flex:1; padding:11px 0; border-radius:12px; font-size:13px;
+        font-weight:700; cursor:pointer; border:1px solid; transition:all 0.2s ease;
+        text-align:center;
+    }
+    .fc-knew-yes {
+        background:rgba(16,185,129,0.12); border-color:rgba(16,185,129,0.35);
+        color:#6ee7b7;
+    }
+    .fc-knew-yes:hover { background:rgba(16,185,129,0.22); transform:translateY(-1px); }
+    .fc-knew-no  {
+        background:rgba(239,68,68,0.1); border-color:rgba(239,68,68,0.3);
+        color:#fca5a5;
+    }
+    .fc-knew-no:hover { background:rgba(239,68,68,0.2); transform:translateY(-1px); }
+
+    /* ── Memory strip ── */
+    .fc-mem-strip {
+        display:flex; gap:6px; max-width:620px; margin:0 auto 24px;
+        justify-content:center; flex-wrap:wrap;
+    }
+    .fc-mem-pip {
+        width:32px; height:6px; border-radius:99px;
+        transition:background 0.3s ease;
+    }
+
+    /* ── Analytics ── */
+    .fc-stat-grid {
+        display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin-bottom:24px;
+    }
+    @media(max-width:768px){ .fc-stat-grid{ grid-template-columns:repeat(2,1fr); } }
+    .fc-stat-tile {
+        background:var(--surface); border:1px solid var(--border);
+        border-radius:14px; padding:18px 12px; text-align:center;
+        transition:all 0.25s ease; animation:fadeUp 0.4s ease;
+    }
+    .fc-stat-tile:hover { border-color:rgba(99,102,241,0.3); transform:translateY(-2px); }
+    .fc-stat-val {
+        font-family:var(--font-head); font-size:28px; font-weight:800;
+        background:linear-gradient(135deg,#6366f1,#a78bfa);
+        -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text;
+    }
+    .fc-stat-label { font-size:11px; color:var(--text3); margin-top:3px; text-transform:uppercase; letter-spacing:0.5px; }
+
+    .fc-topic-bar-row { display:flex; align-items:center; gap:10px; margin-bottom:10px; font-size:13px; }
+    .fc-topic-label { width:150px; flex-shrink:0; color:var(--text2); font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .fc-topic-track { flex:1; height:8px; background:var(--surface2); border-radius:99px; overflow:hidden; border:1px solid var(--border); }
+    .fc-topic-fill  { height:100%; border-radius:99px; background:linear-gradient(90deg,#6366f1,#a78bfa); transition:width 0.7s ease; }
+    .fc-topic-pct   { width:40px; text-align:right; color:var(--text3); font-size:12px; }
+
+    /* ── Card list (browse) ── */
+    .fc-list-card {
+        background:var(--surface); border:1px solid var(--border);
+        border-radius:14px; padding:16px 18px; margin-bottom:10px;
+        transition:all 0.2s ease; animation:fadeUp 0.35s ease;
+    }
+    .fc-list-card:hover { border-color:rgba(99,102,241,0.3); transform:translateX(3px); }
+    .fc-list-q { font-weight:600; color:var(--text); font-size:14px; margin-bottom:6px; }
+    .fc-list-a { color:var(--text2); font-size:13px; line-height:1.55; }
+
+    /* ── Empty state ── */
+    .fc-empty {
+        text-align:center; padding:64px 24px;
+        background:var(--surface); border:2px dashed var(--border);
+        border-radius:20px; animation:fadeIn 0.5s ease;
+    }
+    .fc-empty-icon { font-size:60px; margin-bottom:16px; filter:drop-shadow(0 0 20px rgba(99,102,241,0.5)); }
+    .fc-empty-title { font-family:var(--font-head); font-size:20px; font-weight:700; color:var(--text); margin-bottom:8px; }
+    .fc-empty-sub { font-size:14px; color:var(--text2); max-width:340px; margin:0 auto; line-height:1.65; }
+
+    /* ── Progress ring ── */
+    .fc-ring-wrap { display:flex; flex-direction:column; align-items:center; }
+    .fc-ring-label { font-size:11px; color:var(--text3); margin-top:6px; text-transform:uppercase; letter-spacing:0.5px; }
+    </style>
+    """, unsafe_allow_html=True)
+
+    # ── Imports ──────────────────────────────────────────────────────────────
+    import random as _random
+
+    # ── Hero ─────────────────────────────────────────────────────────────────
+    st.markdown("""
+    <div class="fc-hero">
+        <div style="display:inline-flex;align-items:center;gap:6px;
+            background:linear-gradient(135deg,rgba(99,102,241,0.2),rgba(139,92,246,0.15));
+            border:1px solid rgba(99,102,241,0.3);border-radius:99px;
+            padding:5px 14px;font-size:11px;font-weight:700;letter-spacing:1px;
+            text-transform:uppercase;color:#a78bfa;margin-bottom:16px;">
+            ✦ AI Powered
+        </div>
+        <div class="fc-hero-title">AI Flashcard Generator</div>
+        <div class="fc-hero-sub">
+            Transform your documents into smart, adaptive flashcards.
+            Study smarter with spaced repetition and memory tracking.
+        </div>
+        <div class="fc-chips">
+            <div class="fc-chip">🃏 Smart Cards</div>
+            <div class="fc-chip">⚡ AI Generated</div>
+            <div class="fc-chip">🔄 Spaced Repetition</div>
+            <div class="fc-chip">📊 Analytics</div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ── Mode selector ─────────────────────────────────────────────────────────
+    mode_cols = st.columns(4)
+    modes = [("study", "🃏 Study"), ("analytics", "📊 Analytics"),
+             ("browse", "📋 Browse"), ("settings", "⚙️ Generate")]
+    for i, (m_key, m_label) in enumerate(modes):
+        with mode_cols[i]:
+            is_active = st.session_state.fc_mode == m_key
+            if st.button(m_label, use_container_width=True,
+                         type="primary" if is_active else "secondary",
+                         key=f"fc_mode_{m_key}"):
+                st.session_state.fc_mode = m_key
+                st.rerun()
+
+    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+
+    # ═══════════════════════════════════════════
+    #  ⚙️  GENERATE MODE
+    # ═══════════════════════════════════════════
+    if st.session_state.fc_mode == "settings":
+
+        index_chk, texts = load_index()
+
+        if index_chk is None:
+            st.markdown("""
+            <div class="card" style="border-left:3px solid #f59e0b;text-align:center;padding:32px;">
+              <div style="font-size:36px;margin-bottom:10px;">⚠️</div>
+              <div class="card-title">No document indexed yet</div>
+              <div class="card-body">Upload a file in the sidebar and click <b>⚡ Process</b> first.</div>
+            </div>""", unsafe_allow_html=True)
+        else:
+            st.markdown("""
+            <div class="card">
+              <div class="card-title">📄 Generate Flashcards from Your Document</div>
+              <div class="card-body">
+                The AI will read your indexed document and create question-answer flashcards
+                covering definitions, concepts, formulas, and key ideas.<br><br>
+                Tip: Longer, richer documents produce better and more varied cards.
+              </div>
+            </div>""", unsafe_allow_html=True)
+
+            num_cards = st.slider("Number of flashcards to generate", 5, 30, 15, key="fc_num")
+
+            if st.button("🚀 Generate Flashcards", type="primary", use_container_width=True):
+                full_text = " ".join(texts)
+                with st.spinner("🧠 Reading document and creating flashcards…"):
+                    result = generate_flashcards(full_text, num_cards=num_cards)
+
+                if result["success"]:
+                    st.session_state.fc_cards   = result["cards"]
+                    st.session_state.fc_idx     = 0
+                    st.session_state.fc_flipped = False
+                    st.session_state.fc_mode    = "study"
+                    st.success(f"✅ {len(result['cards'])} flashcards generated!")
+                    st.rerun()
+                else:
+                    st.markdown(f"""
+                    <div style="background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.25);
+                        border-radius:12px;padding:16px 18px;color:#fca5a5;font-size:14px;">
+                        <strong>⚠️ Generation failed</strong><br>{result['error']}
+                    </div>""", unsafe_allow_html=True)
+
+            # Export / Import
+            if st.session_state.fc_cards:
+                st.markdown("---")
+                st.markdown('<div class="card-title" style="margin-bottom:10px;">📦 Export / Import</div>', unsafe_allow_html=True)
+                ec1, ec2 = st.columns(2)
+                with ec1:
+                    export_data = json.dumps(st.session_state.fc_cards, indent=2, ensure_ascii=False).encode()
+                    st.download_button("⬇️ Export JSON", data=export_data,
+                                       file_name="flashcards.json", mime="application/json",
+                                       use_container_width=True)
+                with ec2:
+                    imported = st.file_uploader("⬆️ Import JSON", type=["json"],
+                                                key="fc_import", label_visibility="collapsed")
+                    if imported:
+                        try:
+                            imported_cards = json.load(imported)
+                            st.session_state.fc_cards = [_validate_card(c, i) for i, c in enumerate(imported_cards)]
+                            st.success(f"✅ Imported {len(imported_cards)} cards")
+                            st.rerun()
+                        except Exception as ex:
+                            st.error(f"Import failed: {ex}")
+
+                if st.button("🗑️ Clear All Flashcards", use_container_width=True):
+                    st.session_state.fc_cards   = []
+                    st.session_state.fc_idx     = 0
+                    st.session_state.fc_flipped = False
+                    st.rerun()
+
+    # ═══════════════════════════════════════════
+    #  🃏  STUDY MODE
+    # ═══════════════════════════════════════════
+    elif st.session_state.fc_mode == "study":
+
+        cards = st.session_state.fc_cards
+
+        if not cards:
+            st.markdown("""
+            <div class="fc-empty">
+                <div class="fc-empty-icon">🃏</div>
+                <div class="fc-empty-title">No Flashcards Yet</div>
+                <div class="fc-empty-sub">Switch to ⚙️ Generate to create flashcards from your document.</div>
+            </div>""", unsafe_allow_html=True)
+        else:
+            # ── Filter bar ───────────────────────────────────────────────────
+            topics  = ["All"] + sorted(set(c["topic"] for c in cards))
+            diffs   = ["All", "Easy", "Medium", "Hard"]
+            mem_flt = ["All", "New", "Learning", "Familiar", "Mastered"]
+
+            f1, f2, f3 = st.columns(3)
+            with f1:
+                t_filter = st.selectbox("Topic", topics, key="fc_t_flt",
+                                        label_visibility="collapsed")
+            with f2:
+                d_filter = st.selectbox("Difficulty", diffs, key="fc_d_flt",
+                                        label_visibility="collapsed")
+            with f3:
+                m_filter = st.selectbox("Memory Level", mem_flt, key="fc_m_flt",
+                                        label_visibility="collapsed")
+
+            # Apply filters
+            mem_label_to_level = {"New": 0, "Learning": 1, "Familiar": 2, "Mastered": 3}
+            filtered = [
+                c for c in cards
+                if (t_filter == "All" or c["topic"] == t_filter)
+                and (d_filter == "All" or c["difficulty"] == d_filter)
+                and (m_filter == "All" or c.get("memory_level", 0) == mem_label_to_level.get(m_filter, -1))
+            ]
+
+            if not filtered:
+                st.info("No cards match the current filters.")
+            else:
+                # Clamp index
+                idx = min(st.session_state.fc_idx, len(filtered) - 1)
+                st.session_state.fc_idx = idx
+                card = filtered[idx]
+
+                # ── Memory pip strip ─────────────────────────────────────────
+                pip_html = '<div class="fc-mem-strip">'
+                for i, c in enumerate(filtered):
+                    ml = c.get("memory_level", 0)
+                    colour = MEMORY_COLOURS.get(ml, "#6366f1")
+                    opacity = "1.0" if i == idx else "0.35"
+                    pip_html += f'<div class="fc-mem-pip" style="background:{colour};opacity:{opacity};width:{"40" if i == idx else "24"}px;"></div>'
+                pip_html += '</div>'
+                st.markdown(pip_html, unsafe_allow_html=True)
+
+                # ── Flip card ────────────────────────────────────────────────
+                flipped     = st.session_state.fc_flipped
+                flip_class  = "flipped" if flipped else ""
+                diff_style  = card.get("diff_style", {"bg": "rgba(99,102,241,0.15)", "border": "rgba(99,102,241,0.3)", "text": "#a78bfa"})
+                mem_colour  = card.get("mem_colour", "#6366f1")
+                mem_label   = card.get("mem_label", "New")
+                starred_ico = "⭐" if card.get("starred") else "☆"
+
+                front_html = f"""
+<div class="fc-front fc-face">
+  <div class="fc-card-number">Card {idx+1} / {len(filtered)}</div>
+  <div class="fc-star-btn" id="fc_star_{idx}">{starred_ico}</div>
+  <div class="fc-badges">
+    <span class="fc-badge" style="background:{diff_style['bg']};border-color:{diff_style['border']};color:{diff_style['text']};">{card['difficulty']}</span>
+    <span class="fc-badge" style="background:rgba(99,102,241,0.12);border-color:rgba(99,102,241,0.3);color:#a78bfa;">{card['topic']}</span>
+    <span class="fc-badge" style="background:rgba(0,0,0,0.2);border-color:{mem_colour}44;color:{mem_colour};">{mem_label}</span>
+  </div>
+  <div class="fc-question">{card['question']}</div>
+  {'<div class="fc-hint">💡 Hint: ' + card['hint'] + '</div>' if card.get('hint') else ''}
+  <div class="fc-flip-label">👆 Click card to reveal answer</div>
+</div>"""
+
+                back_html = f"""
+<div class="fc-back fc-face">
+  <div class="fc-card-number">Card {idx+1} / {len(filtered)}</div>
+  <div class="fc-answer">{card['answer']}</div>
+  {'<div class="fc-explanation">' + card.get('explanation','') + '</div>' if card.get('explanation') else ''}
+  <div class="fc-flip-label">👆 Click to see question</div>
+</div>"""
+
+                st.markdown(f"""
+<div class="fc-scene">
+  <div class="fc-card-wrap {flip_class}" id="fc_card_wrap">
+    {front_html}
+    {back_html}
+  </div>
+</div>""", unsafe_allow_html=True)
+
+                # ── Flip + Nav buttons ────────────────────────────────────────
+                ctrl1, ctrl2, ctrl3, ctrl4, ctrl5 = st.columns([1,1,2,1,1])
+                with ctrl1:
+                    if st.button("⬅️", key="fc_prev", use_container_width=True):
+                        st.session_state.fc_idx     = (idx - 1) % len(filtered)
+                        st.session_state.fc_flipped = False
+                        st.rerun()
+                with ctrl2:
+                    if st.button("🔀", key="fc_shuffle", use_container_width=True, help="Shuffle cards"):
+                        _random.shuffle(st.session_state.fc_cards)
+                        st.session_state.fc_idx     = 0
+                        st.session_state.fc_flipped = False
+                        st.rerun()
+                with ctrl3:
+                    if st.button(
+                        "🔄 Reveal Answer" if not flipped else "🔄 Hide Answer",
+                        type="primary", use_container_width=True, key="fc_flip"):
+                        st.session_state.fc_flipped = not flipped
+                        st.rerun()
+                with ctrl4:
+                    if st.button("⭐", key="fc_star", use_container_width=True, help="Star card"):
+                        # Find original card in full list and toggle star
+                        orig_q = card["question"]
+                        for c in st.session_state.fc_cards:
+                            if c["question"] == orig_q:
+                                c["starred"] = not c.get("starred", False)
+                        st.rerun()
+                with ctrl5:
+                    if st.button("➡️", key="fc_next", use_container_width=True):
+                        st.session_state.fc_idx     = (idx + 1) % len(filtered)
+                        st.session_state.fc_flipped = False
+                        st.rerun()
+
+                # ── Knew-it buttons (only when flipped) ───────────────────────
+                if flipped:
+                    st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
+                    k1, k2 = st.columns(2)
+                    with k1:
+                        if st.button("✅ Knew It!", type="primary",
+                                     use_container_width=True, key="fc_knew_yes"):
+                            orig_q = card["question"]
+                            for c in st.session_state.fc_cards:
+                                if c["question"] == orig_q:
+                                    update_memory(c, knew_it=True)
+                            st.session_state.fc_idx     = (idx + 1) % len(filtered)
+                            st.session_state.fc_flipped = False
+                            st.rerun()
+                    with k2:
+                        if st.button("❌ Didn't Know", use_container_width=True, key="fc_knew_no"):
+                            orig_q = card["question"]
+                            for c in st.session_state.fc_cards:
+                                if c["question"] == orig_q:
+                                    update_memory(c, knew_it=False)
+                            st.session_state.fc_idx     = (idx + 1) % len(filtered)
+                            st.session_state.fc_flipped = False
+                            st.rerun()
+
+                # ── Quick progress bar ────────────────────────────────────────
+                mastered_count = sum(1 for c in filtered if c.get("memory_level", 0) == 3)
+                prog_pct = int(mastered_count / len(filtered) * 100) if filtered else 0
+                st.markdown(f"""
+                <div style="margin-top:18px;">
+                  <div style="display:flex;justify-content:space-between;
+                      font-size:12px;color:var(--text3);margin-bottom:5px;">
+                    <span>Mastery Progress</span>
+                    <span>{mastered_count} / {len(filtered)} mastered</span>
+                  </div>
+                  <div style="height:6px;background:var(--surface2);border-radius:99px;overflow:hidden;">
+                    <div style="height:100%;width:{prog_pct}%;border-radius:99px;
+                        background:linear-gradient(90deg,#6366f1,#10b981);
+                        transition:width 0.6s ease;"></div>
+                  </div>
+                </div>""", unsafe_allow_html=True)
+
+    # ═══════════════════════════════════════════
+    #  📊  ANALYTICS MODE
+    # ═══════════════════════════════════════════
+    elif st.session_state.fc_mode == "analytics":
+
+        cards = st.session_state.fc_cards
+
+        if not cards:
+            st.markdown("""
+            <div class="fc-empty">
+                <div class="fc-empty-icon">📊</div>
+                <div class="fc-empty-title">No Data Yet</div>
+                <div class="fc-empty-sub">Generate flashcards and start studying to see your analytics.</div>
+            </div>""", unsafe_allow_html=True)
+        else:
+            analytics = get_analytics(cards)
+
+            # ── Stat tiles ───────────────────────────────────────────────────
+            st.markdown('<div class="fc-stat-grid">', unsafe_allow_html=True)
+            tiles = [
+                (analytics["mastery_pct"],  "Mastery %"),
+                (analytics["mastered"],     "Mastered"),
+                (analytics["total"],        "Total Cards"),
+                (analytics["starred"],      "Starred"),
+            ]
+            for val, label in tiles:
+                st.markdown(f"""
+                <div class="fc-stat-tile">
+                  <div class="fc-stat-val">{val}</div>
+                  <div class="fc-stat-label">{label}</div>
+                </div>""", unsafe_allow_html=True)
+            st.markdown("</div>", unsafe_allow_html=True)
+
+            # ── Memory breakdown ──────────────────────────────────────────────
+            col_m, col_d = st.columns(2)
+
+            with col_m:
+                st.markdown('<div class="card-title" style="margin-bottom:12px;">🧠 Memory Levels</div>', unsafe_allow_html=True)
+                mem_data = [
+                    ("New",      analytics["new"],      "#6366f1"),
+                    ("Learning", analytics["learning"], "#f59e0b"),
+                    ("Familiar", analytics["familiar"], "#06b6d4"),
+                    ("Mastered", analytics["mastered"], "#10b981"),
+                ]
+                for label, count, colour in mem_data:
+                    pct = int(count / analytics["total"] * 100) if analytics["total"] else 0
+                    st.markdown(f"""
+                    <div class="fc-topic-bar-row">
+                      <div class="fc-topic-label">{label}</div>
+                      <div class="fc-topic-track">
+                        <div class="fc-topic-fill" style="width:{pct}%;background:linear-gradient(90deg,{colour},{colour}aa);"></div>
+                      </div>
+                      <div class="fc-topic-pct">{count}</div>
+                    </div>""", unsafe_allow_html=True)
+
+            with col_d:
+                st.markdown('<div class="card-title" style="margin-bottom:12px;">📈 Difficulty Split</div>', unsafe_allow_html=True)
+                diff_colours = {"Easy": "#10b981", "Medium": "#f59e0b", "Hard": "#ef4444"}
+                for diff, count in analytics["diff_map"].items():
+                    pct = int(count / analytics["total"] * 100) if analytics["total"] else 0
+                    col = diff_colours.get(diff, "#6366f1")
+                    st.markdown(f"""
+                    <div class="fc-topic-bar-row">
+                      <div class="fc-topic-label">{diff}</div>
+                      <div class="fc-topic-track">
+                        <div class="fc-topic-fill" style="width:{pct}%;background:linear-gradient(90deg,{col},{col}aa);"></div>
+                      </div>
+                      <div class="fc-topic-pct">{count}</div>
+                    </div>""", unsafe_allow_html=True)
+
+            st.markdown("<br>", unsafe_allow_html=True)
+
+            # ── Topic progress ────────────────────────────────────────────────
+            st.markdown('<div class="card-title" style="margin-bottom:12px;">📚 Topic Mastery</div>', unsafe_allow_html=True)
+            for topic, ts in sorted(analytics["topic_map"].items(),
+                                    key=lambda x: x[1]["mastered"] / max(x[1]["total"], 1),
+                                    reverse=True):
+                pct = int(ts["mastered"] / ts["total"] * 100) if ts["total"] else 0
+                bar_colour = (
+                    "linear-gradient(90deg,#10b981,#34d399)" if pct >= 70 else
+                    "linear-gradient(90deg,#f59e0b,#fbbf24)" if pct >= 40 else
+                    "linear-gradient(90deg,#ef4444,#f87171)"
+                )
+                st.markdown(f"""
+                <div class="fc-topic-bar-row">
+                  <div class="fc-topic-label" title="{topic}">{topic[:22] + "…" if len(topic) > 22 else topic}</div>
+                  <div class="fc-topic-track">
+                    <div class="fc-topic-fill" style="width:{pct}%;background:{bar_colour};"></div>
+                  </div>
+                  <div class="fc-topic-pct">{ts['mastered']}/{ts['total']}</div>
+                </div>""", unsafe_allow_html=True)
+
+            # ── Weak topics ───────────────────────────────────────────────────
+            if analytics.get("weak_topics"):
+                st.markdown("<br>", unsafe_allow_html=True)
+                st.markdown('<div class="card-title" style="margin-bottom:10px;">⚠️ Topics Needing Revision</div>', unsafe_allow_html=True)
+                for wt in analytics["weak_topics"]:
+                    st.markdown(
+                        f'<div class="insight-row weak" style="background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.2);border-radius:10px;padding:10px 14px;color:#fca5a5;font-size:13.5px;margin-bottom:6px;">📌 {wt}</div>',
+                        unsafe_allow_html=True)
+
+    # ═══════════════════════════════════════════
+    #  📋  BROWSE MODE
+    # ═══════════════════════════════════════════
+    elif st.session_state.fc_mode == "browse":
+
+        cards = st.session_state.fc_cards
+
+        if not cards:
+            st.markdown("""
+            <div class="fc-empty">
+                <div class="fc-empty-icon">📋</div>
+                <div class="fc-empty-title">No Cards to Browse</div>
+                <div class="fc-empty-sub">Generate flashcards first from the ⚙️ Generate tab.</div>
+            </div>""", unsafe_allow_html=True)
+        else:
+            # Search + filter
+            s1, s2 = st.columns([3, 1])
+            with s1:
+                search = st.text_input("🔍 Search flashcards…", key="fc_search",
+                                       label_visibility="collapsed",
+                                       placeholder="🔍 Search questions or answers…")
+            with s2:
+                show_starred = st.toggle("⭐ Starred only", key="fc_starred_only")
+
+            topics = ["All"] + sorted(set(c["topic"] for c in cards))
+            t_browse = st.selectbox("Filter by topic", topics, key="fc_browse_topic",
+                                    label_visibility="collapsed")
+
+            filtered = [
+                c for c in cards
+                if (not search or search.lower() in c["question"].lower()
+                                or search.lower() in c["answer"].lower())
+                and (t_browse == "All" or c["topic"] == t_browse)
+                and (not show_starred or c.get("starred", False))
+            ]
+
+            st.markdown(f'<div style="font-size:13px;color:var(--text3);margin-bottom:12px;">{len(filtered)} card{"s" if len(filtered) != 1 else ""} shown</div>', unsafe_allow_html=True)
+
+            for i, c in enumerate(filtered):
+                diff_style = c.get("diff_style", {"bg": "rgba(99,102,241,0.15)", "border": "rgba(99,102,241,0.3)", "text": "#a78bfa"})
+                mem_colour = c.get("mem_colour", "#6366f1")
+                mem_label  = c.get("mem_label", "New")
+                st.markdown(f"""
+                <div class="fc-list-card">
+                  <div style="display:flex;align-items:center;gap:7px;margin-bottom:8px;flex-wrap:wrap;">
+                    <span style="font-size:12px;font-weight:700;color:var(--text3);">#{i+1}</span>
+                    <span class="fc-badge" style="background:{diff_style['bg']};border:1px solid {diff_style['border']};color:{diff_style['text']};padding:2px 9px;border-radius:99px;font-size:10px;font-weight:700;">{c['difficulty']}</span>
+                    <span style="font-size:11px;color:var(--text3);">📌 {c['topic']}</span>
+                    <span style="margin-left:auto;font-size:11px;color:{mem_colour};">● {mem_label}</span>
+                    {'<span style="font-size:13px;">⭐</span>' if c.get("starred") else ''}
+                  </div>
+                  <div class="fc-list-q">Q: {c['question']}</div>
+                  <div class="fc-list-a">A: {c['answer']}</div>
+                  {('<div style="font-size:12px;color:var(--text3);margin-top:5px;font-style:italic;">💡 ' + c['hint'] + '</div>') if c.get('hint') else ''}
+                </div>""", unsafe_allow_html=True)
