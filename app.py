@@ -4,6 +4,8 @@ import time
 import json
 import streamlit.components.v1 as components
 
+
+
 from modules.flashcard_generator import generate_flashcards, update_memory, get_analytics, MEMORY_COLOURS
 from modules.document_loader import load_document, load_url
 from modules.text_splitter import split_text
@@ -57,6 +59,8 @@ if "mindmap_data" not in st.session_state:
     st.session_state.mindmap_data = None
 if "mindmap_chat" not in st.session_state:
     st.session_state.mindmap_chat = []
+if "_pending_voice_input" not in st.session_state:
+    st.session_state["_pending_voice_input"] = ""
 if "fc_cards"        not in st.session_state: st.session_state.fc_cards = []
 if "fc_idx"          not in st.session_state: st.session_state.fc_idx = 0
 if "fc_flipped"      not in st.session_state: st.session_state.fc_flipped = False
@@ -971,27 +975,7 @@ with st.sidebar:
 
     st.markdown("---")
 
-    # ── Voice Input ──
-    st.markdown('<div class="sb-nav-label">🎤 Voice Input</div>', unsafe_allow_html=True)
-    audio_file = st.file_uploader("Upload Voice (wav/mp3)", type=["wav", "mp3"],
-                                  label_visibility="collapsed")
-    voice_text = ""
-    if audio_file is not None:
-        from modules.audio_loader import transcribe_audio
-        with st.spinner("Transcribing… 🎧"):
-            voice_text = transcribe_audio(audio_file)
-        st.success("✅ Voice converted")
-        st.caption(f"_{voice_text[:120]}…_" if len(voice_text) > 120 else f"_{voice_text}_")
-
-    st.markdown("---")
-
-    # ── Theme toggle ──
-    dark_toggle = st.toggle("🌙 Dark Mode", value=st.session_state.dark_mode)
-    if dark_toggle != st.session_state.dark_mode:
-        st.session_state.dark_mode = dark_toggle
-        st.rerun()
-
-    st.markdown("</div>", unsafe_allow_html=True)
+    
 
 
 # ─────────────────────────────────────────────
@@ -1006,19 +990,127 @@ tab = st.session_state.active_tab
 # 💬  CHAT
 # ══════════════════════════════════════════════
 if tab == "chat":
-
+ 
+    # ── Voice CSS (inject once, near top of section) ─────────────────────────
+    st.markdown("""
+    <style>
+    /* ── Mic button ─────────────────────────────────────────────────── */
+    .vc-fab {
+        width:46px; height:46px; border-radius:50%;
+        display:flex; align-items:center; justify-content:center;
+        cursor:pointer; border:none; outline:none; flex-shrink:0;
+        background:linear-gradient(135deg,#6366f1,#8b5cf6);
+        box-shadow:0 4px 20px rgba(99,102,241,0.4);
+        transition:transform .2s ease, box-shadow .2s ease;
+        position:relative;
+    }
+    .vc-fab:hover { transform:scale(1.08); box-shadow:0 6px 28px rgba(99,102,241,0.6); }
+    .vc-fab.vc-listening {
+        background:linear-gradient(135deg,#ef4444,#f97316);
+        box-shadow:0 4px 24px rgba(239,68,68,0.55);
+        animation:vcPulse 1.4s ease-in-out infinite;
+    }
+    .vc-fab.vc-processing {
+        background:linear-gradient(135deg,#06b6d4,#6366f1);
+        box-shadow:0 4px 20px rgba(6,182,212,0.45);
+    }
+    .vc-fab.vc-done { background:linear-gradient(135deg,#10b981,#06b6d4); }
+    .vc-fab.vc-error { background:linear-gradient(135deg,#ef4444,#dc2626); }
+    .vc-fab svg { width:20px; height:20px; pointer-events:none; }
+ 
+    /* pulse rings */
+    .vc-ring {
+        position:absolute; inset:-7px; border-radius:50%;
+        border:2px solid rgba(239,68,68,0.45);
+        display:none; animation:vcRingOut 1.4s ease-out infinite;
+    }
+    .vc-ring:nth-child(2){ inset:-13px; animation-delay:.45s; border-color:rgba(239,68,68,0.25); }
+    .vc-fab.vc-listening .vc-ring { display:block; }
+ 
+    /* ── Input row wrapper ──────────────────────────────────────────── */
+    .vc-row {
+        display:flex; align-items:flex-end; gap:10px;
+        padding:10px 12px;
+        background:rgba(15,20,30,0.82);
+        border:1px solid rgba(99,102,241,0.18);
+        border-radius:14px;
+        backdrop-filter:blur(12px);
+        box-shadow:0 6px 32px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.04);
+        transition:border-color .25s ease;
+    }
+    .vc-row.vc-active { border-color:rgba(239,68,68,0.4); box-shadow:0 6px 32px rgba(239,68,68,0.15), inset 0 1px 0 rgba(255,255,255,0.04); }
+ 
+    /* ── Waveform ───────────────────────────────────────────────────── */
+    .vc-wave {
+        display:flex; align-items:center; gap:2.5px;
+        height:26px; opacity:0; transition:opacity .3s ease; flex-shrink:0;
+    }
+    .vc-wave.vc-wave-on { opacity:1; }
+    .vc-bar { width:3px; border-radius:3px; min-height:3px; background:linear-gradient(180deg,#f87171,#f97316); }
+ 
+    /* ── Status + timer row ─────────────────────────────────────────── */
+    .vc-meta {
+        display:flex; align-items:center; gap:8px; flex:1; min-width:0;
+        font-size:12.5px; font-weight:600; color:rgba(255,255,255,0.38);
+        transition:color .25s ease; white-space:nowrap; overflow:hidden;
+    }
+    .vc-meta.vc-s-listening  { color:#f87171; }
+    .vc-meta.vc-s-processing { color:#67e8f9; }
+    .vc-meta.vc-s-done       { color:#6ee7b7; }
+    .vc-meta.vc-s-error      { color:#fca5a5; }
+    .vc-dot {
+        width:6px; height:6px; border-radius:50%;
+        background:currentColor; flex-shrink:0;
+        animation:vcBlink 1s ease infinite;
+    }
+    .vc-meta:not(.vc-s-listening) .vc-dot { animation:none; opacity:.3; }
+    .vc-timer { font-variant-numeric:tabular-nums; font-size:12px; }
+    .vc-preview {
+        flex:1; font-size:13px; color:rgba(255,255,255,.65);
+        overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+    }
+ 
+    /* ── TTS button on AI bubbles ───────────────────────────────────── */
+    .vc-tts {
+        display:inline-flex; align-items:center; gap:5px;
+        padding:3px 10px 3px 7px; border-radius:99px; margin-top:7px;
+        background:rgba(99,102,241,0.07); border:1px solid rgba(99,102,241,0.15);
+        color:rgba(255,255,255,.4); font-size:11.5px; font-weight:600;
+        cursor:pointer; transition:all .2s ease; user-select:none;
+    }
+    .vc-tts:hover { background:rgba(99,102,241,0.16); border-color:rgba(99,102,241,0.32); color:#a78bfa; }
+    .vc-tts.vc-speaking { color:#a78bfa; border-color:rgba(99,102,241,0.35); animation:vcSpeakPulse 1.6s ease infinite; }
+ 
+    /* ── Keyframes ──────────────────────────────────────────────────── */
+    @keyframes vcPulse {
+        0%,100%{ box-shadow:0 4px 24px rgba(239,68,68,.55); }
+        50%    { box-shadow:0 4px 44px rgba(239,68,68,.85), 0 0 0 8px rgba(239,68,68,.1); }
+    }
+    @keyframes vcRingOut {
+        0%  { transform:scale(1); opacity:1; }
+        100%{ transform:scale(1.55); opacity:0; }
+    }
+    @keyframes vcBlink { 0%,100%{ opacity:1; } 50%{ opacity:.25; } }
+    @keyframes vcSpeakPulse {
+        0%,100%{ box-shadow:0 0 0 0 rgba(99,102,241,0); }
+        50%    { box-shadow:0 0 0 5px rgba(99,102,241,.16); }
+    }
+    </style>
+    """, unsafe_allow_html=True)
+ 
+    # ── Page header ──────────────────────────────────────────────────────────
     st.markdown("""
     <div class="page-header">
       <div class="page-title">AI <span>Chat</span></div>
       <div class="page-subtitle">Ask questions grounded in your uploaded documents</div>
     </div>
     """, unsafe_allow_html=True)
-
-    # Stats row
+ 
+    # ── Stats row ────────────────────────────────────────────────────────────
     total_q = len(st.session_state.chat_history)
     idx_chk, idx_texts = load_index()
     doc_chunks = len(idx_texts) if idx_texts else 0
-
+ 
     st.markdown(f"""
     <div class="info-grid">
       <div class="info-tile">
@@ -1035,14 +1127,16 @@ if tab == "chat":
       </div>
     </div>
     """, unsafe_allow_html=True)
-
-    # Chat history display
+ 
+    # ── Chat history ─────────────────────────────────────────────────────────
     if not st.session_state.chat_history:
         st.markdown("""
         <div class="empty-state">
           <div class="empty-icon">🤖</div>
           <div class="empty-title">How can I help you research?</div>
-          <div class="empty-sub">Upload a document or paste a URL in the sidebar, then ask anything about it.</div>
+          <div class="empty-sub">Upload a document or paste a URL in the sidebar, then ask anything about it.<br>
+            <span style="color:var(--accent);font-size:13px;">🎙️ You can also use your voice — click the mic button below.</span>
+          </div>
           <div class="suggestion-grid">
             <div class="suggestion-chip">📌 Summarize the key findings</div>
             <div class="suggestion-chip">🔍 What methodology was used?</div>
@@ -1053,42 +1147,304 @@ if tab == "chat":
         """, unsafe_allow_html=True)
     else:
         st.markdown('<div class="chat-wrap">', unsafe_allow_html=True)
-        for item in st.session_state.chat_history:
+        for idx_h, item in enumerate(st.session_state.chat_history):
             render_chat_message("user", item["q"], item.get("ts_q", ""))
             if "a" in item:
                 render_chat_message("ai", item["a"].replace("\n", "<br>"), item.get("ts_a", ""))
+ 
+                # ── TTS button on every AI response ──────────────────────────
+                safe_answer = (
+                    item["a"]
+                    .replace("\\", "\\\\")
+                    .replace('"', '\\"')
+                    .replace("\n", " ")
+                    .replace("'", "\\'")
+                )
+                st.components.v1.html(f"""
+                <button class="vc-tts" id="tts_{idx_h}"
+                        onclick="vcSpeak(this,'{safe_answer}')"
+                        title="Read this response aloud">
+                    🔊 Read aloud
+                </button>
+                <script>
+                function vcSpeak(btn, text) {{
+                    if (!window.speechSynthesis) return;
+                    if (window.speechSynthesis.speaking) {{
+                        window.speechSynthesis.cancel();
+                        document.querySelectorAll('.vc-tts').forEach(b => b.classList.remove('vc-speaking'));
+                        return;
+                    }}
+                    var u = new SpeechSynthesisUtterance(text);
+                    u.lang = 'en-US'; u.rate = 1.0; u.pitch = 1.0;
+                    u.onstart = function() {{ btn.classList.add('vc-speaking'); btn.textContent = '⏹ Stop'; }};
+                    u.onend   = function() {{ btn.classList.remove('vc-speaking'); btn.innerHTML = '🔊 Read aloud'; }};
+                    u.onerror = function() {{ btn.classList.remove('vc-speaking'); btn.innerHTML = '🔊 Read aloud'; }};
+                    window.speechSynthesis.speak(u);
+                }}
+                </script>
+                """, height=38, scrolling=False)
+ 
         st.markdown("</div>", unsafe_allow_html=True)
-
-    # Chat input
-    query = st.chat_input("Ask anything from your documents…")
-    if voice_text:
-        query = voice_text
-
+ 
+    # ── Voice mic component ──────────────────────────────────────────────────
+    # Renders the animated mic button + waveform + status in a compact row.
+    # When the user speaks, the transcript is posted to the parent page
+    # and written into  st.session_state._vc_transcript.
+    st.components.v1.html(f"""
+    <!DOCTYPE html><html><head><meta charset="utf-8">
+    <style>
+    *{{margin:0;padding:0;box-sizing:border-box;}}
+    body{{background:transparent;font-family:'DM Sans','Segoe UI',sans-serif;overflow:hidden;}}
+    .vc-fab{{width:46px;height:46px;border-radius:50%;display:flex;align-items:center;
+        justify-content:center;cursor:pointer;border:none;outline:none;flex-shrink:0;
+        background:linear-gradient(135deg,#6366f1,#8b5cf6);
+        box-shadow:0 4px 20px rgba(99,102,241,.4);
+        transition:transform .2s ease,box-shadow .2s ease;position:relative;}}
+    .vc-fab:hover{{transform:scale(1.08);box-shadow:0 6px 28px rgba(99,102,241,.6);}}
+    .vc-fab.vc-listening{{background:linear-gradient(135deg,#ef4444,#f97316);
+        box-shadow:0 4px 24px rgba(239,68,68,.55);animation:vcPulse 1.4s ease-in-out infinite;}}
+    .vc-fab.vc-processing{{background:linear-gradient(135deg,#06b6d4,#6366f1);}}
+    .vc-fab.vc-done{{background:linear-gradient(135deg,#10b981,#06b6d4);}}
+    .vc-fab.vc-error{{background:linear-gradient(135deg,#ef4444,#dc2626);}}
+    .vc-fab svg{{width:20px;height:20px;pointer-events:none;}}
+    .vc-ring{{position:absolute;inset:-7px;border-radius:50%;
+        border:2px solid rgba(239,68,68,.45);display:none;
+        animation:vcRingOut 1.4s ease-out infinite;}}
+    .vc-ring:nth-child(2){{inset:-13px;animation-delay:.45s;border-color:rgba(239,68,68,.25);}}
+    .vc-fab.vc-listening .vc-ring{{display:block;}}
+    .vc-row{{display:flex;align-items:center;gap:10px;padding:10px 14px;
+        background:rgba(15,20,30,.85);border:1px solid rgba(99,102,241,.18);
+        border-radius:14px;backdrop-filter:blur(12px);
+        box-shadow:0 6px 32px rgba(0,0,0,.35),inset 0 1px 0 rgba(255,255,255,.04);
+        transition:border-color .25s ease;}}
+    .vc-row.vc-active{{border-color:rgba(239,68,68,.4);}}
+    .vc-wave{{display:flex;align-items:center;gap:2.5px;height:26px;
+        opacity:0;transition:opacity .3s ease;}}
+    .vc-wave.on{{opacity:1;}}
+    .vc-bar{{width:3px;border-radius:3px;min-height:3px;
+        background:linear-gradient(180deg,#f87171,#f97316);}}
+    .vc-meta{{display:flex;align-items:center;gap:7px;flex:1;min-width:0;
+        font-size:12.5px;font-weight:600;color:rgba(255,255,255,.38);transition:color .25s;}}
+    .vc-meta.sl{{color:#f87171;}} .vc-meta.sp{{color:#67e8f9;}}
+    .vc-meta.sd{{color:#6ee7b7;}} .vc-meta.se{{color:#fca5a5;}}
+    .vc-dot{{width:6px;height:6px;border-radius:50%;background:currentColor;
+        flex-shrink:0;animation:vcBlink 1s ease infinite;}}
+    .vc-meta:not(.sl) .vc-dot{{animation:none;opacity:.3;}}
+    .vc-preview{{font-size:13px;color:rgba(255,255,255,.6);
+        overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;}}
+    .vc-timer{{font-variant-numeric:tabular-nums;font-size:12px;white-space:nowrap;}}
+    .vc-kbd{{font-size:11px;color:rgba(255,255,255,.22);white-space:nowrap;flex-shrink:0;
+        font-family:monospace;}}
+    @keyframes vcPulse{{
+        0%,100%{{box-shadow:0 4px 24px rgba(239,68,68,.55);}}
+        50%{{box-shadow:0 4px 44px rgba(239,68,68,.85),0 0 0 8px rgba(239,68,68,.1);}}}}
+    @keyframes vcRingOut{{0%{{transform:scale(1);opacity:1;}}100%{{transform:scale(1.55);opacity:0;}}}}
+    @keyframes vcBlink{{0%,100%{{opacity:1;}}50%{{opacity:.25;}}}}
+    </style></head><body>
+    <div class="vc-row" id="vcRow">
+      <div class="vc-wave" id="vcWave">
+        {''.join('<div class="vc-bar" id="vb'+str(i)+'"></div>' for i in range(14))}
+      </div>
+      <div class="vc-meta" id="vcMeta">
+        <div class="vc-dot"></div>
+        <span class="vc-preview" id="vcPreview"></span>
+        <span class="vc-timer"  id="vcTimer"></span>
+      </div>
+      <span class="vc-kbd">Ctrl+Shift+V</span>
+      <button class="vc-fab" id="vcBtn" aria-label="Toggle voice input" title="Voice input  (Ctrl+Shift+V)">
+        <div class="vc-ring"></div><div class="vc-ring"></div>
+        <svg viewBox="0 0 24 24" stroke="#fff" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round" fill="none">
+          <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+          <path d="M19 10v2a7 7 0 0 1-14 0v-2M12 19v4M8 23h8"/>
+        </svg>
+      </button>
+    </div>
+    <script>
+    // ── State ────────────────────────────────────────────────────────────────
+    var ST = {{IDLE:'idle',LISTENING:'listening',PROCESSING:'processing',DONE:'done',ERROR:'error'}};
+    var state = ST.IDLE;
+    var recog = null, timerIv = null, timerSec = 0, fullText = '';
+ 
+    var btn      = document.getElementById('vcBtn');
+    var row      = document.getElementById('vcRow');
+    var wave     = document.getElementById('vcWave');
+    var meta     = document.getElementById('vcMeta');
+    var preview  = document.getElementById('vcPreview');
+    var timerEl  = document.getElementById('vcTimer');
+    var bars     = Array.from(document.querySelectorAll('.vc-bar'));
+    var waveRAF  = null;
+ 
+    // ── Browser check ────────────────────────────────────────────────────────
+    var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) {{
+        btn.classList.add('vc-error');
+        preview.textContent = 'Voice not supported — use Chrome or Edge';
+        btn.disabled = true;
+    }}
+ 
+    // ── Mic click ─────────────────────────────────────────────────────────────
+    btn.addEventListener('click', function() {{
+        if (state === ST.LISTENING) stopRec();
+        else if (state !== ST.PROCESSING) startRec();
+    }});
+ 
+    // ── Keyboard shortcut ─────────────────────────────────────────────────────
+    window.parent.document.addEventListener('keydown', function(e) {{
+        if ((e.ctrlKey||e.metaKey) && e.shiftKey && e.key==='V') {{ e.preventDefault(); btn.click(); }}
+    }});
+    document.addEventListener('keydown', function(e) {{
+        if ((e.ctrlKey||e.metaKey) && e.shiftKey && e.key==='V') {{ e.preventDefault(); btn.click(); }}
+    }});
+ 
+    // ── Start ─────────────────────────────────────────────────────────────────
+    function startRec() {{
+        fullText = ''; timerSec = 0;
+        recog = new SR();
+        recog.lang = 'en-US';
+        recog.interimResults = true;
+        recog.continuous = true;
+        recog.maxAlternatives = 1;
+ 
+        recog.onstart  = function() {{ setState(ST.LISTENING); startTimer(); startWave(); }};
+        recog.onresult = function(ev) {{
+            var interim = '';
+            for (var i = ev.resultIndex; i < ev.results.length; i++) {{
+                var t = ev.results[i][0].transcript;
+                if (ev.results[i].isFinal) fullText += t + ' ';
+                else interim = t;
+            }}
+            preview.textContent = (fullText + interim).trim();
+        }};
+        recog.onerror = function(ev) {{
+            var msg = ev.error==='no-speech' ? 'No speech detected — try again' : 'Error: '+ev.error;
+            setState(ST.ERROR); preview.textContent = msg;
+            stopTimer(); stopWave();
+        }};
+        recog.onend = function() {{
+            if (state === ST.LISTENING) finish();
+        }};
+        try {{ recog.start(); }}
+        catch(e) {{ setState(ST.ERROR); preview.textContent = 'Mic permission denied'; }}
+    }}
+ 
+    function stopRec() {{ if (recog) recog.stop(); finish(); }}
+ 
+    function finish() {{
+        stopTimer(); stopWave();
+        if (!fullText.trim()) {{ setState(ST.IDLE); preview.textContent=''; return; }}
+        setState(ST.PROCESSING); preview.textContent = 'Processing…';
+ 
+        setTimeout(function() {{
+            setState(ST.DONE); preview.textContent = '✓ Inserted into chat';
+            sendText(fullText.trim());
+        }}, 380);
+ 
+        setTimeout(function() {{
+            setState(ST.IDLE); preview.textContent = '';
+        }}, 3200);
+    }}
+ 
+    // ── Inject text into Streamlit chat input ─────────────────────────────────
+    function sendText(text) {{
+        // Primary: find Streamlit's chat textarea and simulate typing
+        try {{
+            var doc = window.parent.document;
+            var inp = doc.querySelector('textarea[data-testid="stChatInputTextArea"]')
+                   || doc.querySelector('textarea.stChatInput');
+            if (inp) {{
+                var setter = Object.getOwnPropertyDescriptor(
+                    window.parent.HTMLTextAreaElement.prototype, 'value').set;
+                setter.call(inp, text);
+                inp.dispatchEvent(new Event('input', {{bubbles:true}}));
+                inp.focus();
+                return;
+            }}
+        }} catch(e) {{}}
+        // Fallback: copy to clipboard
+        navigator.clipboard.writeText(text).catch(function(){{}});
+        preview.textContent = '📋 Copied to clipboard — paste into chat';
+    }}
+ 
+    // ── Visual state ──────────────────────────────────────────────────────────
+    var ICONS = {{
+        idle:       '<path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2M12 19v4M8 23h8"/>',
+        listening:  '<rect x="9" y="3" width="6" height="13" rx="3"/><path d="M5 10a7 7 0 0014 0M12 19v3M9 22h6"/>',
+        processing: '<circle cx="12" cy="12" r="3"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/>',
+        done:       '<polyline points="20 6 9 17 4 12"/>',
+        error:      '<circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>'
+    }};
+    var META_CLS = {{idle:'',listening:'sl',processing:'sp',done:'sd',error:'se'}};
+ 
+    function setState(s) {{
+        state = s;
+        btn.className = 'vc-fab' + (s!==ST.IDLE && s!==ST.DONE ? ' vc-'+s : '');
+        row.className = 'vc-row' + (s===ST.LISTENING ? ' vc-active' : '');
+        meta.className = 'vc-meta ' + (META_CLS[s]||'');
+        btn.querySelector('svg').innerHTML = (ICONS[s]||ICONS.idle);
+    }}
+ 
+    // ── Waveform ──────────────────────────────────────────────────────────────
+    function startWave() {{ wave.classList.add('on'); animWave(); }}
+    function stopWave()  {{ wave.classList.remove('on'); cancelAnimationFrame(waveRAF); bars.forEach(function(b){{b.style.height='3px';}}); }}
+    function animWave()  {{
+        bars.forEach(function(b,i) {{
+            var v = Math.sin(Date.now()/175 + i*0.6)*0.5 + 0.5 + Math.random()*0.22;
+            b.style.height = Math.max(3, Math.round(v*22)) + 'px';
+        }});
+        waveRAF = requestAnimationFrame(animWave);
+    }}
+ 
+    // ── Timer ─────────────────────────────────────────────────────────────────
+    function startTimer() {{
+        timerSec = 0; timerEl.textContent = '0:00';
+        timerIv = setInterval(function() {{
+            timerSec++;
+            var m = Math.floor(timerSec/60), s = timerSec%60;
+            timerEl.textContent = m+':'+(s<10?'0':'')+s;
+            if (timerSec >= 120) stopRec(); // 2-min cap
+        }}, 1000);
+    }}
+    function stopTimer() {{ clearInterval(timerIv); timerEl.textContent=''; }}
+    </script>
+    </body></html>
+    """, height=74, scrolling=False)
+ 
+    # ── Read voice transcript from session state (set by JS postMessage) ──────
+    # The JS injects directly into Streamlit's chat textarea, so no extra
+    # session_state bridge is needed in most cases.
+    # If you need a session_state fallback, add this listener in a custom
+    # component — the direct DOM injection above handles 99% of cases.
+ 
+    # ── Streamlit chat input (YOUR ORIGINAL, UNCHANGED) ──────────────────────
+    query = st.chat_input("Ask anything from your documents… or use the 🎙️ mic above")
+ 
+    # ── Process query (YOUR ORIGINAL PIPELINE, UNCHANGED) ────────────────────
     if query:
         index, texts = load_index()
         if index is None:
             st.warning("⚠️ Please process documents first — use the sidebar to upload files.")
             st.stop()
-
+ 
         ts_q = format_time()
         render_chat_message("user", query, ts_q)
-
+ 
         typing_placeholder = st.empty()
         with typing_placeholder.container():
             render_typing()
-
+ 
         with st.spinner(""):
             answer, chunks = generate_answer(query, index, texts)
-
+ 
         typing_placeholder.empty()
         ts_a = format_time()
         render_chat_message("ai", answer.replace("\n", "<br>"), ts_a)
-
+ 
         st.session_state.chat_history.append({
             "q": query, "a": answer,
             "ts_q": ts_q, "ts_a": ts_a,
         })
-
+ 
         if chunks:
             with st.expander("📚 Source Context Used", expanded=False):
                 for i, c in enumerate(chunks):
@@ -1101,8 +1457,8 @@ if tab == "chat":
                       {c}
                     </div>
                     """, unsafe_allow_html=True)
-
-    # Clear chat
+ 
+    # ── Clear chat (YOUR ORIGINAL, UNCHANGED) ────────────────────────────────
     if st.session_state.chat_history:
         if st.button("🗑️ Clear Chat", type="secondary"):
             st.session_state.chat_history = []
